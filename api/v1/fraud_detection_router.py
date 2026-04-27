@@ -1,7 +1,7 @@
-from fastapi import APIRouter, File, UploadFile, Form
+from fastapi import APIRouter, UploadFile, Form
 from typing import Annotated
 
-from schema.verify import BaseVerifyResponse
+from api.v1.schema.verify import BaseVerifyResponse
 from controller import preprocessor
 
 router = APIRouter(prefix="/v1")
