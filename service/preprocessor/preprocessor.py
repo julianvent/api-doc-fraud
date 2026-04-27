@@ -9,4 +9,5 @@ def process_file(
 def process_batch(file_paths: list[str]):
     """
     This is your process batch in pipeline.py
+    You can return the list of paths after processing each document
     """

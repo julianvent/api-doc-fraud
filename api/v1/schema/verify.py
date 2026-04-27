@@ -1,8 +1,10 @@
 from pydantic import BaseModel
+from fastapi import UploadFile
 
 
 class BaseVerifyRequest(BaseModel):
-    pass
+    document_images: list[UploadFile]
+    id: str
 
 
 class BaseVerifyResponse(BaseModel):
