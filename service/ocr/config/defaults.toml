@@ -1,0 +1,15 @@
+# OCR configuration: engine settings + visualization assets.
+
+[ocr]
+languages = ["en", "hi"]
+use_gpu = false
+# EasyOCR confidence: detections below this go to 'low_confidence' bucket.
+confidence_threshold = 0.20
+# Script classification: fraction of Latin-range chars for 'english'.
+latin_threshold = 0.50
+# Max normalized vertical distance for two words to belong to the same line.
+line_threshold = 0.02
+
+[visualization]
+# Resolved relative to the ocr module root at load time (not the CWD).
+font_path = "assets/fonts/NotoSansDevanagari.ttf"

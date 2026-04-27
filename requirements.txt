@@ -1,1 +1,21 @@
+# --- web layer ---
 fastapi[standard]
+
+# --- shared ---
+PyMuPDF>=1.24
+Pillow>=10.0
+numpy>=1.26
+opencv-python>=4.8
+
+# --- preprocessor + ocr ---
+easyocr>=1.7
+matplotlib>=3.8
+tomli>=2.0; python_version<"3.11"
+
+# --- tampering ---
+scipy>=1.11
+torch>=2.0
+torchvision>=0.15
+timm>=0.9
+segmentation_models_pytorch>=0.3
+efficientnet_pytorch>=0.7

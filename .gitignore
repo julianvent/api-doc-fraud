@@ -1,3 +1,9 @@
 __pycache__
 .venv
 files
+.claude
+.vscode
+
+# Model weights (too large for GitHub)
+*.pt
+*.pth

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, Form
+from fastapi import APIRouter, Form
 from typing import Annotated
 
 from api.v1.schema.verify import BaseVerifyRequest, BaseVerifyResponse
@@ -16,9 +16,4 @@ async def health():
 async def verify(
     request: Annotated[BaseVerifyRequest, Form(media_type="multipart/form-data")],
 ):
-    fraud_controller.process_files(files=request.document_images, id=request.id)
-
-    mock_response = BaseVerifyResponse(
-        tampering_score=0.9, flags=["dob_incositency"], confidence=0.8
-    )
-    return mock_response
+    return fraud_controller.verify(files=request.document_images, id=request.id)
