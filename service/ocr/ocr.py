@@ -24,7 +24,7 @@ def _get_engine(config: Config) -> PaddleOCRAdapter:
         _engine = PaddleOCRAdapter(config)
     return _engine
 
-
+  
 def _get_backend(config: Config) -> OllamaBackend:
     global _backend
     if _backend is None:
@@ -32,6 +32,12 @@ def _get_backend(config: Config) -> OllamaBackend:
     return _backend
 
 
+def warmup() -> None:
+    config = Config()
+    _get_engine(config)
+    _get_backend(config)
+    
+    
 def _avg_confidence(lines: list) -> float:
     if not lines:
         return 0.0
