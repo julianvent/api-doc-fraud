@@ -10,7 +10,7 @@ _BASE = Path(__file__).parent
 class Config:
     confidence_threshold : float = 0.60
     ollama_url           : str   = "http://localhost:11434/api/generate"
-    ollama_model         : str   = "gemma3:1b"
+    ollama_model         : str   = "gemma3:4b"
     document_fields_path: str = str(_BASE / "data" / "document_fields.json")
     ocr_output_dir       : str   = "service/ocr/output" 
 
