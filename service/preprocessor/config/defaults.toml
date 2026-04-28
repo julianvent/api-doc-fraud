@@ -1,0 +1,32 @@
+# Preprocessor configuration: PDF rasterization, deskew, enhance, and quality.
+
+[io]
+pdf_render_dpi = 300
+
+[preprocessing]
+min_dimension = 800
+max_deskew_angle = 5.0
+min_deskew_angle = 0.3
+border_px = 5
+
+[preprocessing.enhance]
+clahe_clip_limit = 2.0
+clahe_tile_grid = [8, 8]
+unsharp_sigma = 1.5
+unsharp_amount = 1.6
+unsharp_base = -0.6
+
+[quality]
+target_text_sharpness = 25.0
+target_text_contrast = 55.0
+target_x_height_px = 22.0
+weight_sharpness = 0.5
+weight_contrast = 0.2
+weight_x_height = 0.3
+threshold = 0.45
+min_text_components = 8
+adaptive_block_size = 31
+adaptive_c = 10
+
+[pipeline]
+workers = 4
