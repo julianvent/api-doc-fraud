@@ -21,6 +21,7 @@ from service import policy, report_builder
 from service.metadata import metadata
 from service.ocr import ocr
 from service.preprocessor import preprocessor
+from service.preprocessor.app.io.writer import save_image
 from service.tampering import tampering
 
 DEST_PATH = "files"
@@ -59,7 +60,8 @@ def verify(files: list[UploadFile], id: str) -> BaseVerifyResponse:
     timings["preprocessor"] = int((time.perf_counter() - t0) * 1000)
 
     t0 = time.perf_counter()
-    ocr_results = ocr.extract(processed_pages)
+    ocr_paths = [save_image(page, Path(DEST_PATH) / id / "processed") for page in processed_pages]
+    ocr_results = ocr.process(ocr_paths)
     timings["ocr"] = int((time.perf_counter() - t0) * 1000)
 
     risk = policy.compute(
@@ -79,5 +81,5 @@ def verify(files: list[UploadFile], id: str) -> BaseVerifyResponse:
         processed_pages=processed_pages,
         ocr_results=ocr_results,
         risk=risk,
-        ocr_engine_name=ocr.DEFAULT_ENGINE,
+        ocr_engine_name="paddleocr",
     )

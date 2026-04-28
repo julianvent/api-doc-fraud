@@ -1,6 +1,7 @@
 """Translate the internal module outputs into the public BaseVerifyResponse."""
 from __future__ import annotations
 
+import json
 from typing import List
 
 from api.v1.schema.common import (
@@ -19,7 +20,6 @@ from api.v1.schema.common import (
 )
 from api.v1.schema.verify import BaseVerifyResponse
 from service.metadata.analyzer import MetadataReport
-from service.ocr.app.models import OCRResult
 from service.policy import RiskAggregate
 from service.preprocessor.app.models import ProcessedPage
 from service.tampering.detector import PageReport
@@ -35,7 +35,7 @@ def build(
     metadata_reports: List[MetadataReport],
     tampering_reports: List[PageReport],
     processed_pages: List[ProcessedPage],
-    ocr_results: List[OCRResult],
+    ocr_results: list,
     risk: RiskAggregate,
     ocr_engine_name: str,
 ) -> BaseVerifyResponse:
@@ -124,18 +124,19 @@ def _build_preprocessor(pages: List[ProcessedPage]) -> PreprocessorModuleSchema:
     )
 
 
-def _build_ocr(results: List[OCRResult], engine_name: str) -> OCRModuleSchema:
-    pages = [
-        OCRPageSchema(
+def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
+    pages = []
+    for i, r in enumerate(results):
+        result = r.get("result", {}) if isinstance(r, dict) else {}
+        fields = result.get("fields", {})
+        if fields:
+            print(f"[OCR page {i + 1}] fields:\n{json.dumps(fields, indent=2, ensure_ascii=False)}")
+        pages.append(OCRPageSchema(
             page_number=i + 1,
-            english_text=r.english.text,
-            hindi_text=r.hindi.text,
-            english_words_count=len(r.english.words),
-            hindi_words_count=len(r.hindi.words),
-            low_confidence_count=len(r.low_confidence),
-        )
-        for i, r in enumerate(results)
-    ]
+            document_type=result.get("document_type"),
+            verdict=result.get("verdict"),
+            confidence_avg=result.get("confidence_avg", 0.0),
+        ))
     return OCRModuleSchema(engine=engine_name, pages=pages)
 
 
