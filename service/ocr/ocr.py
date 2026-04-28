@@ -1,49 +1,93 @@
-"""Facade for the OCR module. Consumed by the orchestrator.
+from pathlib import Path
 
-The selected engine is built lazily and cached so EasyOCR's expensive Reader
-is created at most once per process. Call `warmup()` from the FastAPI lifespan
-to pay the load cost at startup.
-"""
-from __future__ import annotations
+from service.ocr.agent import analyze
+from service.ocr.agent.base import LLMBackend
+from service.ocr.agent.ollama import OllamaBackend
 
-from typing import List, Optional
-
-from service.ocr.app.config import Config, load as load_config
-from service.ocr.app.contract import OCREngine
-from service.ocr.app.factory import build_engine
-from service.ocr.app.models import OCRResult
-from service.preprocessor.app.models import ProcessedPage
-
-DEFAULT_ENGINE = "easyocr"
-
-_cfg: Optional[Config] = None
-_engine: Optional[OCREngine] = None
-_engine_name: Optional[str] = None
+from .models import Config, PipelineOutput
+from .engine import PaddleOCRAdapter, load_image
+from .language import filter_latin
+from .mrz import detect
 
 
-def _get_cfg() -> Config:
-    global _cfg
-    if _cfg is None:
-        _cfg = load_config()
-    return _cfg
+
+_engine  = None
+_backend = None
 
 
-def warmup(engine_name: str = DEFAULT_ENGINE) -> None:
-    """Eagerly build and load the selected engine."""
-    global _engine, _engine_name
-    cfg = _get_cfg()
-    if _engine is None or _engine_name != engine_name:
-        _engine = build_engine(engine_name, cfg.ocr)
-        _engine_name = engine_name
-    _engine.warmup()
+def _get_engine(config: Config) -> PaddleOCRAdapter:
+    global _engine
+    if _engine is None:
+        _engine = PaddleOCRAdapter(config)
+    return _engine
+
+  
+def _get_backend(config: Config) -> OllamaBackend:
+    global _backend
+    if _backend is None:
+        _backend = OllamaBackend(config.ollama_url, config.ollama_model)
+    return _backend
 
 
-def extract(
-    pages: list[ProcessedPage],
-    engine_name: str = DEFAULT_ENGINE,
-) -> List[OCRResult]:
-    """Run OCR over every preprocessed page. One OCRResult per page."""
-    warmup(engine_name)
-    cfg = _get_cfg()
-    assert _engine is not None
-    return [_engine.extract(p.image, cfg.ocr) for p in pages]
+def warmup() -> None:
+    config = Config()
+    _get_engine(config)
+    _get_backend(config)
+    
+    
+def _avg_confidence(lines: list) -> float:
+    if not lines:
+        return 0.0
+    return sum(l.confidence for l in lines) / len(lines)
+
+
+def _run(image_path: str | Path, config: Config, backend: LLMBackend) -> dict:
+    engine = _get_engine(config)
+    image  = load_image(Path(image_path))
+    lines  = engine.extract(image)
+
+    if not lines:
+        return {"error": "no text extracted", "source": None}
+
+    confidence_avg = _avg_confidence(lines)
+
+    if confidence_avg < config.confidence_threshold:
+        return {
+            "error"         : "low confidence — document quality insufficient",
+            "confidence_avg": round(confidence_avg, 4),
+            "source"        : None
+        }
+
+    english_lines = filter_latin(lines)
+    english_text  = "\n".join(l.text for l in english_lines)
+    mrz           = detect(english_lines)
+
+    mrz_verified   = mrz if (mrz and mrz.valid)     else None
+    mrz_unverified = mrz if (mrz and not mrz.valid) else None
+    source         = (
+        "mrz+gemma"         if mrz_verified   else
+        "mrz_partial+gemma" if mrz_unverified else
+        "gemma"
+    )
+
+    output = PipelineOutput(
+        mrz_verified   = mrz_verified,
+        mrz_unverified = mrz_unverified,
+        english_lines  = english_lines,
+        english_text   = english_text,
+        source         = source,
+        confidence_avg = round(confidence_avg, 4),
+        raw_lines      = lines
+    )
+
+    return analyze(output, config, backend)
+
+
+def process(file_path: str | list) -> dict | list[dict]:
+    config  = Config()
+    backend = _get_backend(config)
+
+    if isinstance(file_path, list):
+        return [_run(fp, config, backend) for fp in file_path]
+
+    return _run(file_path, config, backend)

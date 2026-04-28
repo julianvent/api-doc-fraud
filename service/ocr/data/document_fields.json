@@ -1,0 +1,77 @@
+{
+  "default": [
+    "document_type",
+    "surname",
+    "given_names",
+    "nationality",
+    "date_of_birth",
+    "date_of_issue",
+    "date_of_expiry",
+    "document_number",
+    "sex",
+    "place_of_birth"
+  ],
+
+  "visa": [
+    "document_type",
+    "surname",
+    "given_names",
+    "nationality",
+    "date_of_birth",
+    "date_of_issue",
+    "date_of_expiry",
+    "visa_number",
+    "passport_number",
+    "visa_type",
+    "purpose_of_visit",
+    "number_of_entries",
+    "validity_duration",
+    "place_of_issue",
+    "sex"
+  ],
+
+  "passport": [
+    "document_type",
+    "surname",
+    "given_names",
+    "nationality",
+    "date_of_birth",
+    "place_of_birth",
+    "date_of_issue",
+    "date_of_expiry",
+    "passport_number",
+    "place_of_issue",
+    "sex",
+    "personal_number"
+  ],
+
+  "national_id": [
+    "document_type",
+    "surname",
+    "given_names",
+    "nationality",
+    "date_of_birth",
+    "date_of_expiry",
+    "document_number",
+    "sex",
+    "address"
+  ],
+
+  "pan_card": [
+    "document_type",
+    "name",
+    "father_name",
+    "date_of_birth",
+    "pan_number"
+  ],
+
+  "aadhaar": [
+    "document_type",
+    "name",
+    "date_of_birth",
+    "sex",
+    "address",
+    "pincode",
+    "aadhaar_number"
+  ]
+}
