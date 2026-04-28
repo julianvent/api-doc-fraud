@@ -9,5 +9,6 @@ class BaseVerifyRequest(BaseModel):
 
 class BaseVerifyResponse(BaseModel):
     tampering_score: float
+    metadata_score: float
     flags: list[str]
     confidence: float

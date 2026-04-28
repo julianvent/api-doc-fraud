@@ -1,3 +1,5 @@
+import tempfile
+
 from fastapi import UploadFile
 import shutil
 from pathlib import Path
@@ -39,14 +41,13 @@ def process_files(files: list[UploadFile], id: str):
 
 
 def upload_file(file: UploadFile, id: str) -> str:
-    dest_path = Path(f"{DEST_PATH}/{id}")
-    dest_path.mkdir(parents=True, exist_ok=True)
+    tmp_dir  = Path(tempfile.gettempdir()) / "ocr_tmp" / id
+    tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    file_path = dest_path / file.filename
+    file_path = tmp_dir / file.filename
     with file_path.open(mode="wb") as buffer:
         try:
             shutil.copyfileobj(file.file, buffer)
-            print(f" > File saved: {file_path}")
         except Exception as e:
             print(f" x Error writing file: {file.filename} - {e}")
             return ""

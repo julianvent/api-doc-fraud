@@ -4,7 +4,9 @@ import cv2
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib import font_manager
-from models import PipelineOutput, TextLine
+
+from service.ocr.models import PipelineOutput, TextLine
+
 
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 FONT_PATH = os.path.join(BASE_DIR, "assets", "fonts", "NotoSansDevanagari-Regular.ttf")

@@ -19,6 +19,6 @@ async def verify(
     fraud_controller.process_files(files=request.document_images, id=request.id)
 
     mock_response = BaseVerifyResponse(
-        tampering_score=0.9, flags=["dob_incositency"], confidence=0.8
+        tampering_score=0.9, metadata_score=0.98, flags=["dob_incositency"], confidence=0.8
     )
     return mock_response

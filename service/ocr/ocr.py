@@ -1,8 +1,11 @@
 from pathlib import Path
 
+import cv2
+
 from service.ocr.agent import analyze
 from service.ocr.agent.base import LLMBackend
 from service.ocr.agent.ollama import OllamaBackend
+from service.ocr.visualizer import visualize_matplotlib
 
 from .models import Config, PipelineOutput
 from .engine import PaddleOCRAdapter, load_image
@@ -64,6 +67,7 @@ def _run(image_path: str | Path, config: Config, backend: LLMBackend) -> dict:
         "gemma"
     )
 
+
     output = PipelineOutput(
         mrz_verified   = mrz_verified,
         mrz_unverified = mrz_unverified,
@@ -73,7 +77,12 @@ def _run(image_path: str | Path, config: Config, backend: LLMBackend) -> dict:
         confidence_avg = round(confidence_avg, 4),
         raw_lines      = lines
     )
-
+    image_bgr = cv2.imread(str(image_path))
+    output_dir = Path(config.ocr_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{Path(image_path).stem}_result.png"
+    visualize_matplotlib(image_bgr, output, str(output_path))
+    
     return analyze(output, config, backend)
 
 
