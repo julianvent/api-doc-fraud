@@ -71,13 +71,6 @@ class DocTamperEngine:
     The model takes three inputs: an ImageNet-normalized RGB image, the JPEG
     quantized DCT coefficients of the grayscale channel, and the JPEG
     quantization table used to produce those coefficients.
-
-    The upstream repository uses `jpegio` to extract DCT coefficients. Since
-    `jpegio` lacks wheels for modern Python versions on Windows, we approximate
-    the quantized DCT by encoding the image to JPEG at the target quality,
-    decoding it back, and recomputing block-wise DCT coefficients via scipy.
-    This is not bit-identical to jpegio's output but preserves the statistics
-    the FPH branch of the model relies on.
     """
 
     name = "doctamper"

@@ -1,13 +1,4 @@
-"""Verdict rule: map detector evidence to ACCEPT / REVIEW / HARD_REJECT.
-
-Decision lives in its own module on purpose. Detectors report raw evidence
-(scores, regions, skip reasons); this module applies the recall-first rule
-that turns evidence into a verdict. Swapping the rule — e.g. per document
-type, or per tenant — does not require touching any detector.
-
-Rule order matters: the first matching branch wins. HARD_REJECT rules run
-before REVIEW rules; within a tier, strongest signal first.
-"""
+"""Verdict rule: map detector evidence to ACCEPT / REVIEW / HARD_REJECT."""
 from __future__ import annotations
 
 from typing import List, Tuple

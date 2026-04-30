@@ -41,9 +41,19 @@ def warmup() -> None:
     _warmed_up = True
 
 
-def analyze(paths: list[Path | str]) -> List[PageReport]:
-    """Run tampering analysis over every page of every file. Flat list."""
+def analyze(
+    paths: list[Path | str],
+    output_dir: Path | str,
+) -> List[PageReport]:
+    """Run tampering analysis over every page of every file. Flat list.
+
+    Heatmaps, overlay and face crop are written to `output_dir` for visual
+    inspection.
+    """
     warmup()
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
     reports: List[PageReport] = []
     for p in paths:
         reports.extend(
@@ -54,6 +64,7 @@ def analyze(paths: list[Path | str]) -> List[PageReport]:
                 enable_face_localizer=_face_localizer is not None,
                 mvssnet_engine=_mvssnet_engine,
                 enable_mvssnet=_mvssnet_engine is not None,
+                output_dir=str(out_path),
             )
         )
     return reports
