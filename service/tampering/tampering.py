@@ -19,6 +19,7 @@ from service.tampering.detector import (
     build_face_localizer,
     build_mvssnet_engine,
 )
+from service.tampering.paths import OUTPUT_DIR
 
 _engine: Optional[TamperingEngine] = None
 _mvssnet_engine: Optional[MVSSNetEngine] = None
@@ -41,9 +42,21 @@ def warmup() -> None:
     _warmed_up = True
 
 
-def analyze(paths: list[Path | str]) -> List[PageReport]:
-    """Run tampering analysis over every page of every file. Flat list."""
+def analyze(
+    paths: list[Path | str],
+    output_subdir: Optional[str] = None,
+) -> List[PageReport]:
+    """Run tampering analysis over every page of every file. Flat list.
+
+    If `output_subdir` is given, heatmaps, overlays, and face crops are written
+    to `<service/tampering>/output/<output_subdir>/`.
+    """
     warmup()
+    out_dir: Optional[Path] = None
+    if output_subdir is not None:
+        out_dir = OUTPUT_DIR / output_subdir
+        out_dir.mkdir(parents=True, exist_ok=True)
+
     reports: List[PageReport] = []
     for p in paths:
         reports.extend(
@@ -54,6 +67,7 @@ def analyze(paths: list[Path | str]) -> List[PageReport]:
                 enable_face_localizer=_face_localizer is not None,
                 mvssnet_engine=_mvssnet_engine,
                 enable_mvssnet=_mvssnet_engine is not None,
+                output_dir=str(out_dir) if out_dir is not None else None,
             )
         )
     return reports

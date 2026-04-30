@@ -14,7 +14,7 @@ async def lifespan(app: FastAPI):
     print(" > Warming up OCR engine...")
     from service.ocr import ocr
     ocr.warmup()
-    print(" > Pipeline ready.")
+    print(" > READY!")
     yield
 
 

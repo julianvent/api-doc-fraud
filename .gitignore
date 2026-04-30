@@ -7,3 +7,11 @@ files
 # Model weights (too large for GitHub)
 *.pt
 *.pth
+
+# Per-request artifacts produced by the services
+service/tampering/output/*
+!service/tampering/output/.gitkeep
+service/preprocessor/output/*
+!service/preprocessor/output/.gitkeep
+service/ocr/output/*
+!service/ocr/output/.gitkeep
