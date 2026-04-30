@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+import os
 import numpy as np
 
 _BASE = Path(__file__).parent
@@ -11,8 +12,26 @@ class Config:
     confidence_threshold : float = 0.60
     ollama_url           : str   = "http://localhost:11434/api/generate"
     ollama_model         : str   = "gemma3:4b"
-    document_fields_path: str = str(_BASE / "data" / "document_fields.json")
+    document_fields_path : str   = str(_BASE / "data" / "document_fields.json")
     ocr_output_dir       : str   = "service/ocr/output" 
+
+    # Change between engines
+    #   OCR_ENGINE=paddle  uvicorn main:app --reload  ← default
+    #   OCR_ENGINE=dots, dolphin, easy  uvicorn main:app --reload
+    ocr_engine: str = field(
+        default_factory=lambda: os.getenv("OCR_ENGINE", "paddle")
+    )
+
+    # VLM Models Paths
+    dots_model_path: str = field(
+        default_factory=lambda: os.getenv("DOTS_MODEL_PATH", "service/ocr/DotsOCR")
+    )
+    dolphin_model_path: str = field(
+        default_factory=lambda: os.getenv("DOLPHIN_MODEL_PATH", "service/ocr/hf_model")
+    )
+    dolphin_repo_path: str = field(
+        default_factory=lambda: os.getenv("DOLPHIN_REPO_PATH", "service/ocr/Dolphin")
+    )
 
 
 @dataclass
@@ -27,14 +46,14 @@ class TextLine:
 
 @dataclass
 class MRZResult:
-    valid           : bool
-    surname         : str
-    given_names     : str
-    country         : str
-    birth_date      : str
-    expiry_date     : str
-    number          : str
-    sex             : str
+    valid       : bool
+    surname     : str
+    given_names : str
+    country     : str
+    birth_date  : str
+    expiry_date : str
+    number      : str
+    sex         : str
 
 
 @dataclass

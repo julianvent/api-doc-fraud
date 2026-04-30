@@ -1,3 +1,4 @@
+import os
 import requests
 from .base import LLMBackend
 
@@ -5,8 +6,8 @@ from .base import LLMBackend
 class OllamaBackend(LLMBackend):
 
     def __init__(self, url: str, model: str):
-        self._url   = url
-        self._model = model
+        self._url   = os.getenv("OLLAMA_URL", url)
+        self._model = os.getenv("OLLAMA_MODEL", model)
 
     def complete(self, prompt: str) -> str:
         response = requests.post(self._url, json={
