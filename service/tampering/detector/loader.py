@@ -16,7 +16,7 @@ _FITZ_BASE_DPI = 72.0
 
 @dataclass
 class Page:
-    image: np.ndarray     
+    image: np.ndarray      # HxWx3 uint8 RGB
     page_number: int
     source: str
 

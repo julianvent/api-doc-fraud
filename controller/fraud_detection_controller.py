@@ -21,6 +21,7 @@ from service import policy, report_builder
 from service.metadata import metadata
 from service.ocr import ocr
 from service.preprocessor import preprocessor
+from service.preprocessor.app.io.writer import save_image
 from service.tampering import tampering
 
 DEST_PATH = "files"
@@ -44,11 +45,6 @@ def verify(files: list[UploadFile], id: str) -> BaseVerifyResponse:
 
     paths: List[Path] = [upload_file(f, id) for f in files]
 
-    artifacts_dir = Path(DEST_PATH) / id
-    tampering_dir = artifacts_dir / "tampering"
-    preprocessor_dir = artifacts_dir / "preprocessor"
-    ocr_dir = artifacts_dir / "ocr"
-
     timings: dict[str, int] = {}
 
     t0 = time.perf_counter()
@@ -56,19 +52,16 @@ def verify(files: list[UploadFile], id: str) -> BaseVerifyResponse:
     timings["metadata"] = int((time.perf_counter() - t0) * 1000)
 
     t0 = time.perf_counter()
-    tampering_reports = tampering.analyze(paths, output_dir=tampering_dir)
+    tampering_reports = tampering.analyze(paths)
     timings["tampering"] = int((time.perf_counter() - t0) * 1000)
 
     t0 = time.perf_counter()
-    processed_pages = preprocessor.process(paths, output_dir=preprocessor_dir)
+    processed_pages = preprocessor.process(paths)
     timings["preprocessor"] = int((time.perf_counter() - t0) * 1000)
 
     t0 = time.perf_counter()
-    ocr_paths = [
-        preprocessor_dir / f"{Path(page.source).stem}_p{page.page_number}.png"
-        for page in processed_pages
-    ]
-    ocr_results = ocr.process(ocr_paths, output_dir=ocr_dir)
+    ocr_paths = [save_image(page, Path(DEST_PATH) / id / "processed") for page in processed_pages]
+    ocr_results = ocr.process(ocr_paths)
     timings["ocr"] = int((time.perf_counter() - t0) * 1000)
 
     risk = policy.compute(

@@ -1,4 +1,12 @@
-"""Image-tampering detection module."""
+"""Image-tampering detection module.
+
+Top-level surface:
+  * `analyze(path, engine, ...)` — run the full pipeline and get a
+    `PageReport` per page.
+  * `build_engine(...)` — build a low-level tampering engine (DocTamper, mock).
+  * `format_report(report)` — human-readable formatter for CLI / logs.
+  * Contract dataclasses (PageReport, Verdict, Region, ...).
+"""
 from .detectors import DocTamperDetector, MVSSNetDetector
 from .engine import (
     DocTamperEngine,

@@ -44,12 +44,7 @@ def _avg_confidence(lines: list) -> float:
     return sum(l.confidence for l in lines) / len(lines)
 
 
-def _run(
-    image_path: str | Path,
-    config: Config,
-    backend: LLMBackend,
-    output_dir: Path,
-) -> dict:
+def _run(image_path: str | Path, config: Config, backend: LLMBackend) -> dict:
     engine = _get_engine(config)
     image  = load_image(Path(image_path))
     lines  = engine.extract(image)
@@ -89,23 +84,19 @@ def _run(
         raw_lines      = lines
     )
     image_bgr = cv2.imread(str(image_path))
+    output_dir = Path(config.ocr_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{Path(image_path).stem}_result.png"
     visualize_matplotlib(image_bgr, output, str(output_path))
-
+    
     return analyze(output, config, backend)
 
 
-def process(
-    file_path: str | Path | list,
-    output_dir: Path | str,
-) -> dict | list[dict]:
+def process(file_path: str | list) -> dict | list[dict]:
     config  = Config()
     backend = _get_backend(config)
 
-    out_path = Path(output_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-
     if isinstance(file_path, list):
-        return [_run(fp, config, backend, out_path) for fp in file_path]
+        return [_run(fp, config, backend) for fp in file_path]
 
-    return _run(file_path, config, backend, out_path)
+    return _run(file_path, config, backend)
