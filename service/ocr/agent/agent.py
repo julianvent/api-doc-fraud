@@ -1,11 +1,9 @@
 import json
 import re
 
-
 from service.ocr.agent.base import LLMBackend
 from service.ocr.models import Config, MRZResult, PipelineOutput, TextLine
 from service.ocr.normalizer import normalize_fields
-
 
 
 def _load_fields(path: str) -> dict:
@@ -71,18 +69,37 @@ def _build_spatial_layout(lines: list[TextLine]) -> str:
     )
 
 
+def _build_label_hints_section(label_hints: dict, missing_fields: list) -> str:
+    if not label_hints:
+        return ""
+    relevant = {k: v for k, v in label_hints.items() if k in missing_fields}
+    if not relevant:
+        return ""
+    lines = ["## Label hints for field extraction"]
+    lines.append("Each field may appear under one of these labels in the document:")
+    for field, hints in relevant.items():
+        lines.append(f"  {field}: look for labels like {', '.join(hints)}")
+    return "\n".join(lines)
+
+
 def _build_prompt(output: PipelineOutput,
                   fields_map: dict,
                   missing_fields: list,
                   mrz_fields: dict,
-                  mrz_valid: bool | None) -> str:
-    schemas_json   = json.dumps(fields_map, ensure_ascii=False, indent=2)
+                  mrz_valid: bool | None,
+                  label_hints: dict) -> str:    # en lugar de pasar el JSON completo con indent=2
+    schemas_json = json.dumps(
+        {k: v["fields"] if isinstance(v, dict) else v for k, v in fields_map.items()},
+        ensure_ascii=False,
+        separators=(',', ':')  # sin espacios — menos tokens
+    )
     missing_str    = json.dumps(missing_fields, ensure_ascii=False)
     spatial_layout = _build_spatial_layout(output.english_lines)
+    hints_section  = _build_label_hints_section(label_hints, missing_fields)
 
     mrz_section = ""
     if mrz_fields:
-        mrz_status  = "VERIFIED (checksum passed)" if mrz_valid else "UNVERIFIED (checksum failed — possible tampering)"
+        mrz_status = "VERIFIED (checksum passed)" if mrz_valid else "UNVERIFIED (checksum failed — possible tampering)"
         mrz_section = f"""
 ## MRZ extracted fields — {mrz_status}
 These fields were extracted from the Machine Readable Zone and must NOT be re-extracted.
@@ -92,14 +109,23 @@ These fields were extracted from the Machine Readable Zone and must NOT be re-ex
 
     return f"""You are a strict document validation agent specialized in official identity documents.
 
+## Critical extraction rules
+- A field value is ONLY the text immediately to the right of its label (same y) OR the single line directly below it (next y, similar x).
+- NEVER concatenate multiple lines into a single field value.
+- NEVER include another field's label or value inside a field value.
+- If a value seems too long (more than 5 words for names, more than 12 chars for dates/numbers), it is likely wrong — re-check the coordinates.
+- Extract values exactly as they appear — do not interpret, translate, or reformat.
+- A field value must come from a SINGLE line in the layout, not multiple lines combined.
+
 ## Document layout
 Each line has normalized spatial coordinates [y=row x=column] (0.0 to 1.0).
-Use coordinates to determine which value belongs to which label.
-A value belongs to the label closest to it — same row (same y) or directly below (slightly higher y, similar x).
-Never infer field associations from text content alone — always use spatial proximity.
+Lines with similar y values are on the same row.
+A label and its value are typically on the same row (same y, different x) or the value is on the next row directly below the label (slightly higher y, similar x).
 
 {spatial_layout}
 {mrz_section}
+{hints_section}
+
 ## Step 1 — Identify document type
 Determine the document type from the layout.
 Available document types and their exact field names:
@@ -111,33 +137,32 @@ If the document type is not listed, use "default".
 {missing_str}
 
 For each missing field:
-- Find the label by text and coordinates
-- Value is the text on the same row or directly below (next y, similar x)
-- Extract values exactly as they appear — do not interpret or reformat
-- If label not found, set to null
-- Use exact field names from schema only
+1. Find the label text in the layout using the label hints above
+2. The value is on the SAME ROW (same y ±0.02) to the right, OR the NEXT ROW (y +0.02 to +0.06) at a similar x position
+3. Take ONLY that single line as the value — never combine multiple lines
+4. If the label is not found, set the value to null
+5. Use exact field names from the schema only
 
 ## Step 3 — Detect inconsistencies
 An inconsistency is ONLY:
-- A field value directly contradicts another field value
-  (e.g. date_of_issue is after date_of_expiry)
-- A visual field value contradicts the same MRZ field
-- MRZ checksum failed (already flagged above if applicable)
+- date_of_issue is after date_of_expiry
+- A visual field value directly contradicts the same MRZ field
+- MRZ checksum failed (flagged above if applicable)
 
 Not inconsistencies:
 - Future dates (normal for date_of_expiry)
 - Missing fields
-- Assumptions not verifiable from the document
+- Anything not directly verifiable from the document
 
 ## Step 4 — Verdict
 genuine   → all fields consistent, MRZ valid or absent
-suspicious → at least one real inconsistency or MRZ checksum failed
+suspicious → at least one confirmed inconsistency or MRZ checksum failed
 
-Return ONLY raw JSON, no explanation, no markdown:
+Return ONLY raw JSON, no explanation, no markdown, no preamble:
 {{
     "document_type": "<type matching schema key>",
     "fields": {{
-        "<exact_field_name>": "<value as found or null>"
+        "<exact_field_name>": "<single line value as found or null>"
     }},
     "inconsistencies": [
         {{
@@ -161,29 +186,44 @@ def analyze(output: PipelineOutput,
             backend: LLMBackend) -> dict:
     fields_map = _load_fields(config.document_fields_path)
 
-    # use mrz property — returns verified first, then unverified
     mrz        = output.mrz
     mrz_fields = _mrz_to_dict(mrz) if mrz else {}
     mrz_valid  = mrz.valid if mrz else None
 
-    all_fields     = fields_map.get("default", [])
-    missing_fields = _get_missing_fields(all_fields, mrz_fields)
+    # support both old format (list) and new format (dict with fields/label_hints)
+    def get_fields(entry):
+        if isinstance(entry, dict):
+            return entry.get("fields", [])
+        return entry
 
-    prompt = _build_prompt(output, fields_map, missing_fields, mrz_fields, mrz_valid)
-    raw    = backend.complete(prompt)
+    def get_hints(entry):
+        if isinstance(entry, dict):
+            return entry.get("label_hints", {})
+        return {}
+
+    all_fields     = get_fields(fields_map.get("default", []))
+    missing_fields = _get_missing_fields(all_fields, mrz_fields)
+    label_hints    = get_hints(fields_map.get("default", {}))
+
+    prompt = _build_prompt(
+        output, fields_map, missing_fields,
+        mrz_fields, mrz_valid, label_hints
+    )
+    raw = backend.complete(prompt)
 
     try:
         agent_result = _parse_response(raw)
     except Exception:
         agent_result = {"error": "agent response could not be parsed", "raw": raw}
 
-    doc_type       = agent_result.get("document_type", "default")
-    all_fields     = fields_map.get(doc_type, fields_map.get("default", []))
+    doc_type    = agent_result.get("document_type", "default")
+    doc_entry   = fields_map.get(doc_type, fields_map.get("default", []))
+    all_fields  = get_fields(doc_entry)
+    label_hints = get_hints(doc_entry)
+
     missing_fields = _get_missing_fields(all_fields, mrz_fields)
     agent_fields   = normalize_fields(agent_result.get("fields", {}))
-
-    # MRZ takes priority over agent in merge
-    merged_fields = {**agent_fields, **mrz_fields}
+    merged_fields  = {**agent_fields, **mrz_fields}
 
     mrz_output = None
     if output.mrz_verified:
@@ -194,9 +234,9 @@ def analyze(output: PipelineOutput,
         }
     elif output.mrz_unverified:
         mrz_output = {
-            "valid" : False,
-            "source": "mrz_unverified",
-            "fields": mrz_fields,
+            "valid"  : False,
+            "source" : "mrz_unverified",
+            "fields" : mrz_fields,
             "warning": "MRZ checksum failed — fields may be unreliable"
         }
 
