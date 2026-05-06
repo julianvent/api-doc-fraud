@@ -47,7 +47,7 @@ class PaddleOCRAdapter(OCREngine):
         from paddleocr import PaddleOCR
         self._threshold = config.confidence_threshold
         self._engine = PaddleOCR(
-            lang="en",
+            lang="hi",
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
