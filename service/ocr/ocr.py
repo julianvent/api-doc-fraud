@@ -8,23 +8,44 @@ from service.ocr.agent.ollama import OllamaBackend
 from service.ocr.visualizer import visualize_matplotlib
 
 from .models import Config, PipelineOutput
-from .engine import PaddleOCRAdapter, load_image
+from .engine import OCREngine, PaddleOCRAdapter, DotsOCRAdapter, DolphinOCRAdapter, load_image
 from .language import filter_latin
 from .mrz import detect
 
 
+_ENGINES: dict[str, type[OCREngine]] = {
+    "paddle":  PaddleOCRAdapter,
+    "dots":    DotsOCRAdapter,
+    "dolphin": DolphinOCRAdapter,
+}
 
-_engine  = None
-_backend = None
+# Singleton por nombre de motor (permite comparar varios en el mismo proceso)
+# sin reiniciar el servidor (util para el script de benchmarking)
+_engine_cache: dict[str, OCREngine] = {}
+_engine: OCREngine | None = None
+_backend: OllamaBackend | None = None
 
 
-def _get_engine(config: Config) -> PaddleOCRAdapter:
+# Factories
+
+def _get_engine(config: Config) -> OCREngine:
     global _engine
-    if _engine is None:
-        _engine = PaddleOCRAdapter(config)
+
+    name = config.ocr_engine.lower().strip()
+
+    if name not in _engine_cache:
+        cls = _ENGINES.get(name)
+        if cls is None:
+            raise ValueError(
+                f"Motor OCR desconocido: {name!r}. "
+                f"Disponibles: {sorted(_ENGINES)}"
+            )
+        _engine_cache[name] = cls(config)
+
+    _engine = _engine_cache[name]
     return _engine
 
-  
+
 def _get_backend(config: Config) -> OllamaBackend:
     global _backend
     if _backend is None:
@@ -34,10 +55,13 @@ def _get_backend(config: Config) -> OllamaBackend:
 
 def warmup() -> None:
     config = Config()
+    print(f"[OCR] Warmup — motor: {config.ocr_engine}")
     _get_engine(config)
     _get_backend(config)
-    
-    
+    print(f"[OCR] Warmup completado")
+
+
+# Internal helpers
 def _avg_confidence(lines: list) -> float:
     if not lines:
         return 0.0
@@ -58,7 +82,7 @@ def _run(image_path: str | Path, config: Config, backend: LLMBackend) -> dict:
         return {
             "error"         : "low confidence — document quality insufficient",
             "confidence_avg": round(confidence_avg, 4),
-            "source"        : None
+            "source"        : None,
         }
 
     english_lines = filter_latin(lines)
@@ -73,7 +97,6 @@ def _run(image_path: str | Path, config: Config, backend: LLMBackend) -> dict:
         "gemma"
     )
 
-
     output = PipelineOutput(
         mrz_verified   = mrz_verified,
         mrz_unverified = mrz_unverified,
@@ -81,17 +104,19 @@ def _run(image_path: str | Path, config: Config, backend: LLMBackend) -> dict:
         english_text   = english_text,
         source         = source,
         confidence_avg = round(confidence_avg, 4),
-        raw_lines      = lines
+        raw_lines      = lines,
     )
+
     image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     output_dir = Path(config.ocr_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{Path(image_path).stem}_result.png"
     visualize_matplotlib(image_bgr, output, str(output_path))
-    
+
     return analyze(output, config, backend)
 
 
+# Public API
 def process(file_path: str | list) -> dict | list[dict]:
     config  = Config()
     backend = _get_backend(config)
