@@ -83,7 +83,7 @@ def _run(image_path: str | Path, config: Config, backend: LLMBackend) -> dict:
         confidence_avg = round(confidence_avg, 4),
         raw_lines      = lines
     )
-    image_bgr = cv2.imread(str(image_path))
+    image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     output_dir = Path(config.ocr_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{Path(image_path).stem}_result.png"

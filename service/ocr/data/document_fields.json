@@ -1,77 +1,89 @@
 {
-  "default": [
-    "document_type",
-    "surname",
-    "given_names",
-    "nationality",
-    "date_of_birth",
-    "date_of_issue",
-    "date_of_expiry",
-    "document_number",
-    "sex",
-    "place_of_birth"
-  ],
+  "default": {
+    "fields": ["surname", "given_names", "nationality", "date_of_birth", "date_of_issue", "date_of_expiry", "document_number", "sex", "place_of_birth"],
+    "label_hints": {
+      "surname"         : ["surname", "last name", "apellido"],
+      "given_names"     : ["given name", "given names", "first name", "nombre"],
+      "nationality"     : ["nationality", "nationalite"],
+      "date_of_birth"   : ["date of birth", "dob", "birth date", "fecha de nacimiento"],
+      "date_of_issue"   : ["date of issue", "issue date", "issued on"],
+      "date_of_expiry"  : ["date of expiry", "expiry date", "valid until", "expires"],
+      "document_number" : ["document no", "document number", "no"],
+      "sex"             : ["sex", "gender"],
+      "place_of_birth"  : ["place of birth", "birthplace"]
+    }
+  },
 
-  "visa": [
-    "document_type",
-    "surname",
-    "given_names",
-    "nationality",
-    "date_of_birth",
-    "date_of_issue",
-    "date_of_expiry",
-    "visa_number",
-    "passport_number",
-    "visa_type",
-    "purpose_of_visit",
-    "number_of_entries",
-    "validity_duration",
-    "place_of_issue",
-    "sex"
-  ],
+  "visa": {
+    "fields": ["surname", "given_names", "nationality", "date_of_birth", "date_of_issue", "date_of_expiry", "visa_number", "passport_number", "visa_type", "purpose_of_visit", "number_of_entries", "validity_duration", "place_of_issue", "sex"],
+    "label_hints": {
+      "surname"           : ["surname", "last name"],
+      "given_names"       : ["given name", "given names", "first name"],
+      "nationality"       : ["nationality"],
+      "date_of_birth"     : ["date of birth", "dob"],
+      "date_of_issue"     : ["date of issue", "issue date"],
+      "date_of_expiry"    : ["date of expiry", "valid until", "expiry date"],
+      "visa_number"       : ["visa no", "visa number"],
+      "passport_number"   : ["passport no", "passport number"],
+      "visa_type"         : ["type", "visa type", "type of visa"],
+      "purpose_of_visit"  : ["purpose", "purpose of visit"],
+      "number_of_entries" : ["entries", "number of entries", "no of entries"],
+      "validity_duration" : ["valid for", "duration", "validity"],
+      "place_of_issue"    : ["place of issue", "issued at"],
+      "sex"               : ["sex", "gender"]
+    }
+  },
 
-  "passport": [
-    "document_type",
-    "surname",
-    "given_names",
-    "nationality",
-    "date_of_birth",
-    "place_of_birth",
-    "date_of_issue",
-    "date_of_expiry",
-    "passport_number",
-    "place_of_issue",
-    "sex",
-    "personal_number"
-  ],
+  "passport": {
+    "fields": ["surname", "given_names", "nationality", "date_of_birth", "place_of_birth", "date_of_issue", "date_of_expiry", "passport_number", "place_of_issue", "sex", "personal_number"],
+    "label_hints": {
+      "surname"         : ["surname", "last name"],
+      "given_names"     : ["given name", "given names", "first name"],
+      "nationality"     : ["nationality", "nationalite"],
+      "date_of_birth"   : ["date of birth", "dob"],
+      "place_of_birth"  : ["place of birth", "birthplace"],
+      "date_of_issue"   : ["date of issue", "issue date"],
+      "date_of_expiry"  : ["date of expiry", "expiry date"],
+      "passport_number" : ["passport no", "passport number"],
+      "place_of_issue"  : ["place of issue", "issued at"],
+      "sex"             : ["sex", "gender"],
+      "personal_number" : ["personal no", "personal number", "file no"]
+    }
+  },
 
-  "national_id": [
-    "document_type",
-    "surname",
-    "given_names",
-    "nationality",
-    "date_of_birth",
-    "date_of_expiry",
-    "document_number",
-    "sex",
-    "address"
-  ],
+  "national_id": {
+    "fields": ["surname", "given_names", "nationality", "date_of_birth", "date_of_expiry", "document_number", "sex", "address"],
+    "label_hints": {
+      "surname"         : ["surname", "last name", "apellido"],
+      "given_names"     : ["given name", "first name", "nombre"],
+      "nationality"     : ["nationality", "nacionalidad"],
+      "date_of_birth"   : ["date of birth", "dob", "fecha de nacimiento"],
+      "date_of_expiry"  : ["date of expiry", "expiry date", "valid until"],
+      "document_number" : ["document no", "id number", "no"],
+      "sex"             : ["sex", "gender"],
+      "address"         : ["address", "direccion"]
+    }
+  },
 
-  "pan_card": [
-    "document_type",
-    "name",
-    "father_name",
-    "date_of_birth",
-    "pan_number"
-  ],
+  "pan_card": {
+    "fields": ["name", "father_name", "date_of_birth", "pan_number"],
+    "label_hints": {
+      "name"        : ["name"],
+      "father_name" : ["father's name", "father name", "s/o", "son of", "d/o"],
+      "date_of_birth": ["date of birth", "dob"],
+      "pan_number"  : ["permanent account number", "pan", "income tax"]
+    }
+  },
 
-  "aadhaar": [
-    "document_type",
-    "name",
-    "date_of_birth",
-    "sex",
-    "address",
-    "pincode",
-    "aadhaar_number"
-  ]
+  "aadhaar": {
+    "fields": ["name", "date_of_birth", "sex", "address", "pincode", "aadhaar_number"],
+    "label_hints": {
+      "name"          : ["name"],
+      "date_of_birth" : ["date of birth", "dob", "year of birth", "yob"],
+      "sex"           : ["male", "female", "gender", "sex"],
+      "address"       : ["address", "s/o", "c/o", "w/o"],
+      "pincode"       : ["pincode", "pin"],
+      "aadhaar_number": ["aadhaar", "uid", "uidai", "xxxx"]
+    }
+  }
 }
