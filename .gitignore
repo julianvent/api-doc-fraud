@@ -1,10 +1,14 @@
 __pycache__
 .venv
+venv/
 files
+
+
+output/
 .claude
 .vscode
 
-# Model weights (too large for GitHub)
+# Model weights
 *.pt
 *.pth
 
@@ -15,3 +19,9 @@ service/preprocessor/output/*
 !service/preprocessor/output/.gitkeep
 service/ocr/output/*
 !service/ocr/output/.gitkeep
+
+.dockerignore
+docker-compose.yml
+Dockerfile
+
+DotsOCR/

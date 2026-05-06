@@ -74,11 +74,9 @@ class PreprocessorModuleSchema(BaseModel):
 
 class OCRPageSchema(BaseModel):
     page_number: int
-    english_text: str
-    hindi_text: str
-    english_words_count: int
-    hindi_words_count: int
-    low_confidence_count: int
+    document_type: Optional[str]
+    verdict: Optional[str]
+    confidence_avg: float
 
 
 class OCRModuleSchema(BaseModel):

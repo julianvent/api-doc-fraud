@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from typing import List
 
 from service.metadata.analyzer import MetadataReport
-from service.ocr.app.models import OCRResult
 from service.preprocessor.app.models import ProcessedPage
 from service.tampering.detector import PageReport, Verdict
 
@@ -37,7 +36,7 @@ def compute(
     metadata_reports: List[MetadataReport],
     tampering_reports: List[PageReport],
     processed_pages: List[ProcessedPage],
-    ocr_results: List[OCRResult],
+    ocr_results: list,
 ) -> RiskAggregate:
     """Aggregate signals from the 4 modules into a single verdict."""
     metadata_susp = _max_metadata_suspicion(metadata_reports)
@@ -81,13 +80,12 @@ def _worst_tampering(reports: List[PageReport]) -> tuple[float, str]:
     return worst_score, _verdict_str(worst_v.verdict)
 
 
-def _avg_ocr_confidence(results: List[OCRResult]) -> float:
-    confidences = []
-    for r in results:
-        for w in r.english.words:
-            confidences.append(w.confidence)
-        for w in r.hindi.words:
-            confidences.append(w.confidence)
+def _avg_ocr_confidence(results: list) -> float:
+    confidences = [
+        r.get("result", {}).get("confidence_avg", 0.0)
+        for r in results
+        if isinstance(r, dict) and r.get("result")
+    ]
     if not confidences:
         return 0.0
     return sum(confidences) / len(confidences)

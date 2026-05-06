@@ -1,71 +1,127 @@
-"""Facade for the OCR module. Consumed by the orchestrator.
-
-The selected engine is built lazily and cached so EasyOCR's expensive Reader
-is created at most once per process. Call `warmup()` from the FastAPI lifespan
-to pay the load cost at startup.
-"""
-from __future__ import annotations
-
 from pathlib import Path
-from typing import List, Optional
 
-from service.ocr.app.config import Config, load as load_config
-from service.ocr.app.contract import OCREngine
-from service.ocr.app.factory import build_engine
-from service.ocr.app.models import OCRResult
-from service.ocr.app.visualization.mpl_overlay import render as render_overlay
-from service.ocr.paths import OUTPUT_DIR
-from service.preprocessor.app.models import ProcessedPage
+import cv2
 
-DEFAULT_ENGINE = "easyocr"
+from service.ocr.agent import analyze
+from service.ocr.agent.base import LLMBackend
+from service.ocr.agent.ollama import OllamaBackend
+from service.ocr.visualizer import visualize_matplotlib
 
-_cfg: Optional[Config] = None
-_engine: Optional[OCREngine] = None
-_engine_name: Optional[str] = None
+from .models import Config, PipelineOutput
+from .engine import OCREngine, PaddleOCRAdapter, DotsOCRAdapter, DolphinOCRAdapter, load_image
+from .language import filter_latin
+from .mrz import detect
 
 
-def _get_cfg() -> Config:
-    global _cfg
-    if _cfg is None:
-        _cfg = load_config()
-    return _cfg
+_ENGINES: dict[str, type[OCREngine]] = {
+    "paddle":  PaddleOCRAdapter,
+    "dots":    DotsOCRAdapter,
+    "dolphin": DolphinOCRAdapter,
+}
+
+# Singleton por nombre de motor (permite comparar varios en el mismo proceso)
+# sin reiniciar el servidor (util para el script de benchmarking)
+_engine_cache: dict[str, OCREngine] = {}
+_engine: OCREngine | None = None
+_backend: OllamaBackend | None = None
 
 
-def warmup(engine_name: str = DEFAULT_ENGINE) -> None:
-    """Eagerly build and load the selected engine."""
-    global _engine, _engine_name
-    cfg = _get_cfg()
-    if _engine is None or _engine_name != engine_name:
-        _engine = build_engine(engine_name, cfg.ocr)
-        _engine_name = engine_name
-    _engine.warmup()
+# Factories
+
+def _get_engine(config: Config) -> OCREngine:
+    global _engine
+
+    name = config.ocr_engine.lower().strip()
+
+    if name not in _engine_cache:
+        cls = _ENGINES.get(name)
+        if cls is None:
+            raise ValueError(
+                f"Motor OCR desconocido: {name!r}. "
+                f"Disponibles: {sorted(_ENGINES)}"
+            )
+        _engine_cache[name] = cls(config)
+
+    _engine = _engine_cache[name]
+    return _engine
 
 
-def extract(
-    pages: list[ProcessedPage],
-    engine_name: str = DEFAULT_ENGINE,
-    output_subdir: Optional[str] = None,
-) -> List[OCRResult]:
-    """Run OCR over every preprocessed page. One OCRResult per page.
+def _get_backend(config: Config) -> OllamaBackend:
+    global _backend
+    if _backend is None:
+        _backend = OllamaBackend(config.ollama_url, config.ollama_model)
+    return _backend
 
-    If `output_subdir` is given, an annotated PNG with bboxes per word is
-    saved under `<service/ocr>/output/<output_subdir>/`.
-    """
-    warmup(engine_name)
-    cfg = _get_cfg()
-    assert _engine is not None
 
-    out_dir: Optional[Path] = None
-    if output_subdir is not None:
-        out_dir = OUTPUT_DIR / output_subdir
-        out_dir.mkdir(parents=True, exist_ok=True)
+def warmup() -> None:
+    config = Config()
+    print(f"[OCR] Warmup — motor: {config.ocr_engine}")
+    _get_engine(config)
+    _get_backend(config)
+    print(f"[OCR] Warmup completado")
 
-    results: List[OCRResult] = []
-    for p in pages:
-        result = _engine.extract(p.image, cfg.ocr)
-        results.append(result)
-        if out_dir is not None:
-            stem = Path(p.source).stem
-            target = out_dir / f"{stem}_p{p.page_number}_ocr.png"
-            render_overlay(p.image, result, target, cfg.visualization.font_path)
-    return results
+
+# Internal helpers
+def _avg_confidence(lines: list) -> float:
+    if not lines:
+        return 0.0
+    return sum(l.confidence for l in lines) / len(lines)
+
+
+def _run(image_path: str | Path, config: Config, backend: LLMBackend) -> dict:
+    engine = _get_engine(config)
+    image  = load_image(Path(image_path))
+    lines  = engine.extract(image)
+
+    if not lines:
+        return {"error": "no text extracted", "source": None}
+
+    confidence_avg = _avg_confidence(lines)
+
+    if confidence_avg < config.confidence_threshold:
+        return {
+            "error"         : "low confidence — document quality insufficient",
+            "confidence_avg": round(confidence_avg, 4),
+            "source"        : None,
+        }
+
+    english_lines = filter_latin(lines)
+    english_text  = "\n".join(l.text for l in english_lines)
+    mrz           = detect(english_lines)
+
+    mrz_verified   = mrz if (mrz and mrz.valid)     else None
+    mrz_unverified = mrz if (mrz and not mrz.valid) else None
+    source         = (
+        "mrz+gemma"         if mrz_verified   else
+        "mrz_partial+gemma" if mrz_unverified else
+        "gemma"
+    )
+
+    output = PipelineOutput(
+        mrz_verified   = mrz_verified,
+        mrz_unverified = mrz_unverified,
+        english_lines  = english_lines,
+        english_text   = english_text,
+        source         = source,
+        confidence_avg = round(confidence_avg, 4),
+        raw_lines      = lines,
+    )
+
+    image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    output_dir = Path(config.ocr_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{Path(image_path).stem}_result.png"
+    visualize_matplotlib(image_bgr, output, str(output_path))
+
+    return analyze(output, config, backend)
+
+
+# Public API
+def process(file_path: str | list) -> dict | list[dict]:
+    config  = Config()
+    backend = _get_backend(config)
+
+    if isinstance(file_path, list):
+        return [_run(fp, config, backend) for fp in file_path]
+
+    return _run(file_path, config, backend)
