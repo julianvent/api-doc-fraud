@@ -196,6 +196,8 @@ class DotsOCRAdapter(OCREngine):
             return_tensors="pt",
         ).to(self._device)
 
+        inputs.pop("mm_token_type_ids", None)
+        
         with torch.no_grad():
             generated_ids = self._model.generate(**inputs, max_new_tokens=8_000)
 

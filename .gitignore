@@ -3,15 +3,17 @@ __pycache__
 venv/
 files
 
-<<<<<<< HEAD
-venv/
 
 output/
-=======
 .claude
 .vscode
 
-# Model weights (too large for GitHub)
+# Model weights
 *.pt
 *.pth
->>>>>>> dev
+
+.dockerignore
+docker-compose.yml
+Dockerfile
+
+DotsOCR/
