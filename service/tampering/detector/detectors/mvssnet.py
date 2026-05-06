@@ -13,7 +13,7 @@ from ..report import FaceDetection, MVSSNetResult
 # avoid including the photo frame, ID number panel, or security features
 # that trigger MVSS-Net on otherwise-clean documents. Enough padding remains
 # to preserve hair / jawline context around the face itself.
-_FACE_PAD_FRACTION = 0.10
+_FACE_PAD_FRACTION = 0.50
 
 # MVSS-Net was trained on inputs of ~512 px. Feeding smaller crops forces
 # aggressive upscaling, which blurs exactly the splicing boundaries the
