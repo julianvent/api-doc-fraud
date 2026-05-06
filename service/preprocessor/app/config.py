@@ -30,11 +30,22 @@ class EnhanceConfig:
 
 
 @dataclass(frozen=True)
+class ScanConfig:
+    enabled: bool
+    model_filename: str
+    model_input_size: int
+    heatmap_threshold: float
+    min_area_ratio: float
+    max_area_ratio: float
+    min_corner_angle_deg: float
+    max_corner_angle_deg: float
+
+
+@dataclass(frozen=True)
 class PreprocessingConfig:
     min_dimension: int
-    max_deskew_angle: float
-    min_deskew_angle: float
     border_px: int
+    scan: ScanConfig
     enhance: EnhanceConfig
 
 
@@ -71,16 +82,16 @@ def load(path: str | os.PathLike | None = None) -> Config:
     with resolved.open("rb") as f:
         raw = tomllib.load(f)
 
-    enh = raw["preprocessing"]["enhance"]
     prep = raw["preprocessing"]
+    scn = raw["preprocessing"]["scan"]
+    enh = raw["preprocessing"]["enhance"]
 
     return Config(
         io=IOConfig(**raw["io"]),
         preprocessing=PreprocessingConfig(
             min_dimension=prep["min_dimension"],
-            max_deskew_angle=prep["max_deskew_angle"],
-            min_deskew_angle=prep["min_deskew_angle"],
             border_px=prep["border_px"],
+            scan=ScanConfig(**scn),
             enhance=EnhanceConfig(
                 clahe_clip_limit=enh["clahe_clip_limit"],
                 clahe_tile_grid=tuple(enh["clahe_tile_grid"]),

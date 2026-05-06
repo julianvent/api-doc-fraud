@@ -52,14 +52,15 @@ def verify(files: list[UploadFile], id: str) -> BaseVerifyResponse:
     timings["metadata"] = int((time.perf_counter() - t0) * 1000)
 
     t0 = time.perf_counter()
-    tampering_reports = tampering.analyze(paths)
+    tampering_reports = tampering.analyze(paths, output_subdir=id)
     timings["tampering"] = int((time.perf_counter() - t0) * 1000)
 
     t0 = time.perf_counter()
-    processed_pages = preprocessor.process(paths)
+    processed_pages = preprocessor.process(paths, output_subdir=id)
     timings["preprocessor"] = int((time.perf_counter() - t0) * 1000)
 
     t0 = time.perf_counter()
+    #ocr_results = ocr.extract(processed_pages, output_subdir=id) # De la branch Andy
     ocr_paths = [save_image(page, Path(DEST_PATH) / id / "processed") for page in processed_pages]
     ocr_results = ocr.process(ocr_paths)
     timings["ocr"] = int((time.perf_counter() - t0) * 1000)

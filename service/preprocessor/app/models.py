@@ -14,6 +14,7 @@ class Page:
     page_number: int
     dpi: int
     source: str
+    scanned: bool = False
 
 
 @dataclass
@@ -38,6 +39,7 @@ class ProcessedPage:
     dpi: int
     source: str
     quality: QualityReport
+    scanned: bool = False
 
 
 @dataclass

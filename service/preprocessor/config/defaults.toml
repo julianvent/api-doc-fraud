@@ -5,9 +5,17 @@ pdf_render_dpi = 300
 
 [preprocessing]
 min_dimension = 800
-max_deskew_angle = 5.0
-min_deskew_angle = 0.3
 border_px = 5
+
+[preprocessing.scan]
+enabled = true
+model_filename = "fastvit_t8_h_e_bifpn_256_fp32.onnx"
+model_input_size = 256
+heatmap_threshold = 0.15
+min_area_ratio = 0.20
+max_area_ratio = 0.999
+min_corner_angle_deg = 70.0
+max_corner_angle_deg = 110.0
 
 [preprocessing.enhance]
 clahe_clip_limit = 2.0

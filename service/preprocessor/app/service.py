@@ -32,6 +32,7 @@ def process_file(file_path: str | Path, cfg: Config) -> List[ProcessedPage]:
                 page_number=processed.page_number,
                 dpi=processed.dpi,
                 source=processed.source,
+                scanned=processed.scanned,
             )
             rescued_report = assess(rescued_page, cfg.quality)
             if rescued_report.score > report.score:
@@ -45,5 +46,6 @@ def process_file(file_path: str | Path, cfg: Config) -> List[ProcessedPage]:
             dpi=processed.dpi,
             source=processed.source,
             quality=report,
+            scanned=processed.scanned,
         ))
     return results
