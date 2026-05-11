@@ -11,3 +11,4 @@ class DocumentTemplate(Base):
     document_name = mapped_column(String(120), nullable=False)
     img_path = mapped_column(String(120))
     fields = mapped_column(JSONB)
+    #anchors = mapped_column(JSONB, default=list)

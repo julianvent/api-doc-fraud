@@ -6,3 +6,4 @@ class BaseDocumentTemplateResponse(BaseModel):
     document_type: str
     img_path: str
     fields: list[dict]
+    #anchors: list[dict] = []

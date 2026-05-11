@@ -48,7 +48,7 @@ def verify(files: list[UploadFile], id: str) -> BaseVerifyResponse:
     request_id = str(uuid.uuid4())
     started_at = time.perf_counter()
 
-    paths: List[Path] = [upload_file(files=f, path=FILES_PATH, id=id) for f in files]
+    paths: List[Path] = [upload_file(file=f, path=FILES_PATH, id=id) for f in files]
 
     timings: dict[str, int] = {}
 
@@ -103,7 +103,7 @@ def upload_template(
     path = upload_file(file=img, path=TEMPLATE_PATH, id="test")
 
     new_template = template_ocr.upload(
-        document_name=document_name, document_type=document_type, img_path=path
+        document_name=document_name, document_type=document_type, img_path=str(path)
     )
 
     return new_template
