@@ -103,7 +103,9 @@ def upload_template(
     path = upload_file(file=img, path=TEMPLATE_PATH, id="test")
 
     new_template = template_ocr.upload(
-        document_name=document_name, document_type=document_type, img_path=str(path)
+        document_name=document_name,
+        document_type=document_type,
+        img_path=path.as_posix(),
     )
 
     return new_template
