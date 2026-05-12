@@ -57,9 +57,14 @@ def visualize(
     img_path: str | Path,
     output_path: str | Path | None = None,
     config: "TemplateConfig | None" = None,
+    fields: list[dict] | None = None,
 ) -> Path:
     if config is None:
         config = TemplateConfig()
+    
+    if fields is None:
+        result = extract_template(img_path, config=config)
+        fields = result["fields"]
 
     img_path = Path(img_path)
 
@@ -70,11 +75,7 @@ def visualize(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n[visualizer] Extrayendo template de: {img_path.name}")
-    result = extract_template(img_path, config=config)
-    fields = result["fields"]
-
-    print(f"[visualizer] {result['n_fields']} fields detectados\n")
+    print(f"[visualizer] {len(fields)} fields detectados\n")
     for f in fields:
         print(f"  [{f['key']}]")
         print(f"    label       : {f['label']}")

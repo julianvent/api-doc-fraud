@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image as PILImage, ImageOps
 
 from .model import TemplateTextLine, TemplateConfig
+from .prompt import _PARSE_PROMPT, _build_prompt
 
 
 _TEXT_CATEGORIES = {
@@ -15,67 +16,8 @@ _TEXT_CATEGORIES = {
     "Caption", "Footnote", "Table",
 }
 
-X_RIGHT_MARGIN = 0.95
 Y_PADDING_PX   = 4
 MAX_GAP_RATIO  = 0.15
-
-_PARSE_PROMPT = """\
-Please output the layout information from the document image, \
-including each layout element's bbox, its category, and the corresponding \
-text content within the bbox.
-1. Bbox format: [x1, y1, x2, y2]
-2. Layout Categories: The possible categories are \
-['Caption', 'Footnote', 'Formula', 'List-item', 'Page-footer', \
-'Page-header', 'Picture', 'Section-header', 'Table', 'Text', 'Title'].
-3. Text Content: Extract the complete text within each bbox, \
-preserving the original language and script.
-4. Reading Order: Elements must be listed in natural reading order.
-5. Final Output: The entire output must be a single JSON object.\
-"""
-
-_LLM_PROMPT_TEMPLATE = """\
-You are analyzing a structured official document (visa, passport, ID card, etc.).
-Below is a numbered list of text elements detected by OCR, each with its position.
-
-OCR Elements:
-{elements}
-
-Classify each element as exactly one of: "label", "value", or "anchor".
-
-"label" — a field name or descriptor that identifies what the data is:
-  - Bilingual field names ("Apellidos/ Surname", "नाम /Name", "Date of Birth")
-  - Short descriptive identifiers for data fields
-  - Document section headers that label a specific data field
-  - Includes: document type label ("Tipo/ Type"), country code label 
-    ("Clave del país/ Issuing state code"), document number label 
-    ("Pasaporte No./ Passport No.", "Visa No.")
-
-"value" — actual data specific to the document holder or instance:
-  - Names, dates, numbers, codes
-  - Passport/visa numbers, country codes (MEX, IND), type codes (P, S-6)
-  - Any data that varies per document holder
-
-"anchor" — fixed text identical on every document of this type:
-  - Country or government name printed as document header 
-    ("REPUBLIC OF INDIA", "ESTADOS UNIDOS MEXICANOS")
-  - Document type watermarks ("VISA", "PASSPORT" as background text)
-  - Legal disclaimers, warnings, restriction notices 
-    (long sentences about rules: "Change of Purpose Not Allowed", 
-    "Registration within N days", "Not valid for restricted areas")
-  - Signature line labels ("Firma del Titular/ Holder's Signature")
-  - Office or authority names ("OF. PASAPORTES YUCATÁN")
-  - Page numbers or serial codes with no corresponding label
-
-IMPORTANT: When in doubt between "label" and "anchor" → classify as "label".
-Short codes with a descriptive label above or to the left are "value", not "label".
-
-Return ONLY a valid JSON array, no explanation, no markdown:
-[
-  {{"idx": 0, "type": "label"}},
-  {{"idx": 1, "type": "value"}},
-  {{"idx": 2, "type": "anchor"}}
-]
-"""
 
 
 def _load_image(path: str | Path, max_side: int = 1_600) -> np.ndarray:
@@ -222,8 +164,9 @@ def _call_llm(
     ollama_model: str,
     img_w: int,
     img_h: int,
-) -> tuple[list[dict], list[dict], list[dict]]:
-    """Devuelve (labels, values, anchors) como listas de {idx, text}."""
+    document_type: str = "generic",
+    explicit: bool = False
+) -> tuple[list[dict], list[dict]]:
     elements_text = "\n".join(
         f"{i}: {repr(e.text)} "
         f"[pos: top={round(e.bbox[:,1].min()/img_h, 2)}, "
@@ -232,7 +175,7 @@ def _call_llm(
         f"right={round(e.bbox[:,0].max()/img_w, 2)}]"
         for i, e in enumerate(elements)
     )
-    prompt = _LLM_PROMPT_TEMPLATE.format(elements=elements_text)
+    prompt = _build_prompt(elements_text, document_type, explicit=explicit)
 
     try:
         response = requests.post(
@@ -244,31 +187,32 @@ def _call_llm(
         raw = response.json().get("response", "")
     except Exception as e:
         print(f"  [TemplateOCR/LLM] Error: {e}")
-        return [], [], []
+        return [], [] # para anchors
 
     cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw).strip()
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
-        match = re.search(r"\[.*\]", cleaned, re.DOTALL)
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
         if match:
             try:
                 data = json.loads(match.group(0))
             except json.JSONDecodeError:
                 print("  [TemplateOCR/LLM] No se pudo parsear la respuesta")
-                return [], [], []
+                return [], [] # para anchors
         else:
-            return [], [], []
+            return [], [] # para anchors
 
-    if not isinstance(data, list):
-        return [], [], []
+    if not isinstance(data, dict):
+        return [], [] # para anchors
 
-    labels  = [d for d in data if d.get("type") == "label"]
-    values  = [d for d in data if d.get("type") == "value"]
-    anchors = [d for d in data if d.get("type") == "anchor"]
+    fields  = data.get("fields",  [])
+    anchors = data.get("anchors", [])
 
-    print(f"  [TemplateOCR/LLM] labels={len(labels)}, values={len(values)}, anchors={len(anchors)}")
-    return labels, values, anchors
+    #print(f"  [TemplateOCR/LLM] {len(anchors)} anchors ignorados: "
+    #      f"{[a.get('text', '')[:30] for a in anchors]}")
+
+    return fields, anchors
 
 
 # Bbox helpers
@@ -365,36 +309,70 @@ def _unique_key(base: str, existing: set) -> str:
 # Builder
 def _build_fields(
     elements: list[TemplateTextLine],
-    label_classifications: list[dict],
-    value_classifications: list[dict],
+    pairs: list[dict],
     img_w: int,
     img_h: int,
+    anchor_indices: set = None,
+    #expand_x: bool = True,
 ) -> list[dict]:
-    """
-    Empareja labels con values por proximidad espacial.
-    El LLM clasificó qué es label y qué es value.
-    Python hace el emparejamiento — determinístico y sin errores.
-    """
-    label_indices = {d["idx"] for d in label_classifications if 0 <= d.get("idx", -1) < len(elements)}
-    value_indices = {d["idx"] for d in value_classifications if 0 <= d.get("idx", -1) < len(elements)}
+    all_boxes = [_bbox_to_xyxy(e.bbox) for e in elements]
+    used_keys : set       = set()
+    fields    : list[dict] = []
+    anchor_indices = anchor_indices or set()
 
-    label_elements = [(i, elements[i]) for i in sorted(label_indices)]
-    value_boxes    = [_bbox_to_xyxy(elements[i].bbox) for i in sorted(value_indices)]
+    for pair in pairs:
+        label_text = str(pair.get("label_text", "")).strip()
+        value_text = str(pair.get("value_text", "")).strip()
+        label_idx  = pair.get("label_idx")
+        value_idx  = pair.get("value_idx")
 
-    used_keys  : set       = set()
-    fields     : list[dict] = []
+        if not label_text or label_idx is None:
+            continue
+        if not (0 <= label_idx < len(elements)):
+            continue
 
-    for i, line in label_elements:
-        label_xyxy   = _bbox_to_xyxy(line.bbox)
-        label_region = _normalize(*label_xyxy, img_w=img_w, img_h=img_h)
-        value_region = _estimate_value_region(label_xyxy, value_boxes, img_w, img_h)
+        label_bbox = elements[label_idx].bbox
+        label_xyxy = _bbox_to_xyxy(label_bbox)
 
-        key = _unique_key(_slugify(line.text), used_keys)
+        if value_idx == label_idx:
+            # Label y value en el mismo bloque — dividir el bbox verticalmente
+            top, bottom = _split_bbox_vertically(label_bbox)
+            label_region = _normalize(*top, img_w=img_w, img_h=img_h)
+            value_region = {
+                "x1": round(bottom[0] / img_w, 4),
+                "y1": round(max(bottom[1] - Y_PADDING_PX, 0) / img_h, 4),
+                "x2": round(bottom[2] / img_w, 4),
+                "y2": round(min(bottom[3] + Y_PADDING_PX, img_h) / img_h, 4),
+            }
+
+        elif value_idx is not None and 0 <= value_idx < len(elements):
+            # Label y value en elementos distintos
+            if value_idx in anchor_indices:
+                label_region = _normalize(*label_xyxy, img_w=img_w, img_h=img_h)
+                other_boxes  = [b for j, b in enumerate(all_boxes) if j != label_idx and j not in anchor_indices]
+                value_region = _estimate_value_region(label_xyxy, other_boxes, img_w, img_h)
+            else:
+                vx1, vy1, vx2, vy2 = _bbox_to_xyxy(elements[value_idx].bbox)
+                label_region = _normalize(*label_xyxy, img_w=img_w, img_h=img_h)
+                value_region = {
+                    "x1": round(min(label_xyxy[0], vx1) / img_w, 4),
+                    "y1": round(max(vy1 - Y_PADDING_PX, 0) / img_h, 4),
+                    "x2": round(vx2 / img_w, 4),
+                    "y2": round(min(vy2 + Y_PADDING_PX, img_h) / img_h, 4),
+                }
+
+        else:
+            # LLM no dio value_idx — fallback espacial
+            label_region = _normalize(*label_xyxy, img_w=img_w, img_h=img_h)
+            other_boxes  = [b for j, b in enumerate(all_boxes) if j != label_idx]
+            value_region = _estimate_value_region(label_xyxy, other_boxes, img_w, img_h) #, expand_x=expand_x)
+
+        key = _unique_key(_slugify(label_text), used_keys)
         used_keys.add(key)
 
         fields.append({
             "key":          key,
-            "label":        line.text.strip(),
+            "label":        label_text,
             "label_region": label_region,
             "value_region": value_region,
         })
@@ -457,6 +435,8 @@ def extract_template(
     img_path: str | Path,
     config: "TemplateConfig | None" = None,
     #expand_x: bool = True,
+    document_type: str = "generic",
+    explicit: bool = False,
     include_type: bool = False,
 ) -> dict:
     """
@@ -495,27 +475,30 @@ def extract_template(
     elements_filtered = [e for e in elements if not _is_mrz(e.text)]
     print(f"  [TemplateOCR] {len(elements) - len(elements_filtered)} MRZ lines excluidas")
     
-    print(f"  [TemplateOCR] Paso 2/2 — LLM clasificando elementos...")
-    labels, values, anchors = _call_llm(
-        elements_filtered, config.ollama_url, config.ollama_model, img_w, img_h
-    )
+    print(f"  [TemplateOCR] Paso 2/2 — LLM identificando label-value pairs...")
+    pairs, anchors = _call_llm(
+        elements_filtered, 
+        config.ollama_url,
+        config.ollama_model, 
+        img_w, img_h, 
+        document_type=document_type,
+        explicit=explicit) # Aqui se pueden devolver los anchors
+    print(f"  [TemplateOCR] {len(pairs)} pares identificados")
 
-    if not labels:
-        print("  [TemplateOCR] Warning: LLM no devolvió labels")
-        return {"fields": [], "n_fields": 0, "anchors": [], "engine": "dots+llm"}
+    if not pairs:
+        print("  [TemplateOCR] Warning: LLM no devolvió pares")
+        return {"fields": [], "n_fields": 0, "anchors": [], 
+                "engine": "dots+llm"}
 
-    fields = _build_fields(elements_filtered, labels, values, img_w, img_h)
-    fields = _merge_bilingual_fields(fields)
+    anchor_indices = {a.get("idx") for a in anchors if "idx" in a}
 
-    anchors_output = [
-        {"text": elements_filtered[d["idx"]].text, "idx": d["idx"]}
-        for d in anchors
-        if 0 <= d.get("idx", -1) < len(elements_filtered)
-    ]
+    fields = _build_fields(elements_filtered, pairs, img_w, img_h, anchor_indices) #, expand_x=expand_x)
+    if  document_type.lower() == "passport":
+        fields = _merge_bilingual_fields(fields)
 
     return {
         "fields":   fields,
         "n_fields": len(fields),
-        "anchors":  anchors_output,
+        #"anchors":  anchors,
         "engine":   "dots+llm",
     }

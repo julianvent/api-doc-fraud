@@ -20,7 +20,7 @@ def upload(
     config = TemplateConfig()
 
     # Extraer campos con dots.ocr + LLM
-    result = extract_template(img_path, config=config, include_type=include_type) #, expand_x=True) # False para x's del value fijas
+    result = extract_template(img_path, config=config, document_type=document_type, include_type=include_type, explicit=True) #, expand_x=True) # False para x's del value fijas
     fields = result["fields"]
     #anchors = result.get("anchors", [])
 
@@ -31,7 +31,7 @@ def upload(
     output_dir  = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{Path(img_path).stem}_template_viz.png"
-    visualize(img_path, output_path=output_path, config=config)
+    visualize(img_path, output_path=output_path, config=config, fields=fields)
 
     # Persistir en base de datos
     template = create_template(
