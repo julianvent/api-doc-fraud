@@ -71,10 +71,16 @@ class PaddleOCRAdapter(OCREngine):
             bboxes = res.get("dt_polys", res.get("rec_polys", res.get("det_polys", [])))
             for text, score, bbox in zip(texts, scores, bboxes):
                 if score >= self._threshold and text.strip():
+                    h, w = image.shape[:2]
+
+                    bbox_array = np.array(bbox, dtype=np.float32)
+                    bbox_array[:, 0] /= w  # normalizar x
+                    bbox_array[:, 1] /= h  # normalizar y
+
                     lines.append(TextLine(
                         text=text.strip(),
                         confidence=round(float(score), 4),
-                        bbox=np.array(bbox, dtype=np.int32),
+                        bbox=bbox_array,
                     ))
         return lines
 

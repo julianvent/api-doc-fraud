@@ -1,15 +1,20 @@
+import json
+from datetime import datetime
 from pathlib import Path
 
 import cv2
+from rapidfuzz import fuzz
 
-from service.ocr.agent import analyze
+from service.ocr.agent import analyze, fill_missing_fields
 from service.ocr.agent.base import LLMBackend
 from service.ocr.agent.ollama import OllamaBackend
-from service.ocr.visualizer import visualize_matplotlib
+from service.ocr.visualizer import visualize_matplotlib, visualize_template_match, visualize_agent_extraction
+from service.ocr.template_matcher import load_templates, match as match_template
 
 from .models import Config, PipelineOutput
 from .engine import OCREngine, PaddleOCRAdapter, DotsOCRAdapter, DolphinOCRAdapter, load_image
 from .language import filter_latin
+from .normalizer import normalize_fields
 from .mrz import detect
 
 
@@ -19,29 +24,19 @@ _ENGINES: dict[str, type[OCREngine]] = {
     "dolphin": DolphinOCRAdapter,
 }
 
-# Singleton por nombre de motor (permite comparar varios en el mismo proceso)
-# sin reiniciar el servidor (util para el script de benchmarking)
-_engine_cache: dict[str, OCREngine] = {}
-_engine: OCREngine | None = None
-_backend: OllamaBackend | None = None
+_engine_cache : dict[str, OCREngine] = {}
+_engine       : OCREngine | None     = None
+_backend      : OllamaBackend | None = None
 
-
-# Factories
 
 def _get_engine(config: Config) -> OCREngine:
     global _engine
-
     name = config.ocr_engine.lower().strip()
-
     if name not in _engine_cache:
         cls = _ENGINES.get(name)
         if cls is None:
-            raise ValueError(
-                f"Motor OCR desconocido: {name!r}. "
-                f"Disponibles: {sorted(_ENGINES)}"
-            )
+            raise ValueError(f"Unknown OCR engine: {name!r}. Available: {sorted(_ENGINES)}")
         _engine_cache[name] = cls(config)
-
     _engine = _engine_cache[name]
     return _engine
 
@@ -55,20 +50,163 @@ def _get_backend(config: Config) -> OllamaBackend:
 
 def warmup() -> None:
     config = Config()
-    print(f"[OCR] Warmup — motor: {config.ocr_engine}")
     _get_engine(config)
     _get_backend(config)
-    print(f"[OCR] Warmup completado")
 
 
-# Internal helpers
 def _avg_confidence(lines: list) -> float:
     if not lines:
         return 0.0
     return sum(l.confidence for l in lines) / len(lines)
 
 
-def _run(image_path: str | Path, config: Config, backend: LLMBackend) -> dict:
+_MRZ_MAPPINGS_PATH = Path(__file__).parent / "data" / "mrz_mappings.json"
+_mrz_mappings_cache: dict | None = None
+
+
+def _load_mrz_mappings() -> dict:
+    global _mrz_mappings_cache
+    if _mrz_mappings_cache is not None:
+        return _mrz_mappings_cache
+    try:
+        with open(_MRZ_MAPPINGS_PATH, "r", encoding="utf-8") as f:
+            _mrz_mappings_cache = json.load(f)
+    except Exception:
+        _mrz_mappings_cache = {}
+    return _mrz_mappings_cache
+
+
+def _mrz_to_dict(mrz) -> dict:
+    return normalize_fields({
+        "surname"        : mrz.surname,
+        "given_names"    : mrz.given_names,
+        "country"        : mrz.country,
+        "date_of_birth"  : mrz.birth_date,
+        "date_of_expiry" : mrz.expiry_date,
+        "document_number": mrz.number,
+        "sex"            : mrz.sex,
+    })
+
+
+_DATE_PARSE_FORMATS = [
+    "%Y-%m-%d",
+    "%d/%m/%Y",
+    "%d-%m-%Y",
+    "%Y/%m/%d",
+    "%y%m%d",
+    "%Y%m%d",
+]
+
+
+def _to_ddmmyyyy(value: str) -> str:
+    if not value:
+        return value
+    clean = str(value).strip()
+    for fmt in _DATE_PARSE_FORMATS:
+        try:
+            return datetime.strptime(clean, fmt).strftime("%d/%m/%Y")
+        except ValueError:
+            continue
+    return value
+
+
+_ROW_GROUP_THRESHOLD = 0.03
+
+
+def _row_order(lines: list) -> list:
+    if not lines:
+        return lines
+    def _cy(l):
+        ys = [pt[1] for pt in l.bbox]
+        return (min(ys) + max(ys)) / 2
+    def _cx(l):
+        xs = [pt[0] for pt in l.bbox]
+        return (min(xs) + max(xs)) / 2
+    sorted_by_y = sorted(lines, key=_cy)
+    rows = [[sorted_by_y[0]]]
+    for line in sorted_by_y[1:]:
+        if _cy(line) - _cy(rows[-1][-1]) <= _ROW_GROUP_THRESHOLD:
+            rows[-1].append(line)
+        else:
+            rows.append([line])
+    ordered = []
+    for row in rows:
+        ordered.extend(sorted(row, key=_cx))
+    return ordered
+
+
+MRZ_MATCH_THRESHOLD = 90
+
+
+def _compare_mrz(template_fields: dict, mrz, mapping: dict) -> list[dict]:
+    mrz_dict = _mrz_to_dict(mrz)
+    mismatches = []
+    for template_key, mrz_key in mapping.items():
+        tv = template_fields.get(template_key)
+        if not tv:
+            continue
+        if isinstance(mrz_key, list):
+            parts = [mrz_dict.get(k) for k in mrz_key]
+            if not all(parts):
+                continue
+            mv = " ".join(str(p) for p in parts)
+        else:
+            mv = mrz_dict.get(mrz_key)
+            if not mv:
+                continue
+        tv_norm = _to_ddmmyyyy(str(tv)).strip().upper().replace(" ", "")
+        mv_norm = _to_ddmmyyyy(str(mv)).strip().upper().replace(" ", "")
+        similarity = fuzz.ratio(tv_norm, mv_norm)
+        if similarity < MRZ_MATCH_THRESHOLD:
+            mismatches.append({
+                "field"         : template_key,
+                "template_value": tv,
+                "mrz_value"     : mv,
+                "similarity"    : similarity,
+            })
+    return mismatches
+
+
+
+def _save_visualization(image, output: PipelineOutput, image_path: Path, config: Config) -> None:
+    image_bgr  = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    output_dir = Path(config.ocr_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    visualize_matplotlib(image_bgr, output, str(output_dir / f"{image_path.stem}_result.png"))
+
+
+def _build_pipeline_output(english_lines, english_text, mrz, lines,
+                            confidence_avg,
+                            template_available=False,
+                            template_match_score=None) -> PipelineOutput:
+    mrz_verified   = mrz if (mrz and mrz.valid)     else None
+    mrz_unverified = mrz if (mrz and not mrz.valid) else None
+    source         = (
+        "template+mrz+gemma"    if (template_available and mrz_verified)   else
+        "template+mrz_partial"  if (template_available and mrz_unverified) else
+        "template+gemma"        if template_available                       else
+        "mrz+gemma"             if mrz_verified                            else
+        "mrz_partial+gemma"     if mrz_unverified                          else
+        "gemma"
+    )
+    return PipelineOutput(
+        mrz_verified         = mrz_verified,
+        mrz_unverified       = mrz_unverified,
+        english_lines        = english_lines,
+        english_text         = english_text,
+        source               = source,
+        confidence_avg       = round(confidence_avg, 4),
+        raw_lines            = lines,
+        template_available   = template_available,
+        template_match_score = template_match_score,
+    )
+
+
+def _run(image_path: str | Path,
+         config: Config,
+         backend: LLMBackend,
+         document_type: str | None = None) -> dict:
+
     engine = _get_engine(config)
     image  = load_image(Path(image_path))
     lines  = engine.extract(image)
@@ -85,43 +223,118 @@ def _run(image_path: str | Path, config: Config, backend: LLMBackend) -> dict:
             "source"        : None,
         }
 
+    # ── template path ──────────────────────────────────────────────────────
+    if document_type:
+        templates = load_templates(document_type)
+
+        if templates:
+            best_template, match_result = max(
+                ((t, match_template(lines, t)) for t in templates),
+                key=lambda pair: pair[1].match_score,
+            )
+
+            if not match_result.matched:
+                return {
+                    "verdict"            : "unverifiable",
+                    "flags"              : ["layout_mismatch"],
+                    "match_score"        : match_result.match_score,
+                    "document_type"      : document_type,
+                    "template_available" : True,
+                    "message"            : "document layout does not match expected template",
+                }
+
+            template_fields: dict[str, str | None] = {}
+            for key, field_lines in match_result.field_lines.items():
+                if not field_lines:
+                    template_fields[key] = None
+                    continue
+                ordered = _row_order(field_lines)
+                template_fields[key] = " ".join(l.text.strip() for l in ordered).strip()
+            template_fields = normalize_fields(template_fields)
+
+            english_lines = filter_latin(lines)
+
+            null_fields = [k for k, v in template_fields.items() if not v]
+            if null_fields:
+                filled = fill_missing_fields(english_lines, backend, null_fields)
+                for k, v in filled.items():
+                    if v:
+                        template_fields[k] = v
+                template_fields = normalize_fields(template_fields)
+
+            mrz = detect(lines)
+
+            mapping = _load_mrz_mappings().get(document_type, {})
+            if mrz and mrz.valid and mapping:
+                mismatches = _compare_mrz(template_fields, mrz, mapping)
+                if mismatches:
+                    return {
+                        "verdict"           : "unverifiable",
+                        "flags"             : ["mrz_mismatch"],
+                        "match_score"       : match_result.match_score,
+                        "document_type"     : document_type,
+                        "template_available": True,
+                        "mismatches"        : mismatches,
+                    }
+
+            output = _build_pipeline_output(
+                lines,
+                "\n".join(l.text for l in lines),
+                mrz, lines, confidence_avg,
+                template_available   = True,
+                template_match_score = match_result.match_score,
+            )
+            _save_visualization(image, output, Path(image_path), config)
+
+            image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            template_vis_path = Path(config.ocr_output_dir) / f"{Path(image_path).stem}_template.png"
+            visualize_template_match(image_bgr, lines, best_template, match_result, str(template_vis_path))
+
+            template_fields_out = {k: _to_ddmmyyyy(v) if v else v for k, v in template_fields.items()}
+            mrz_dict_out = None
+            if mrz:
+                mrz_dict_out = {k: _to_ddmmyyyy(v) if v else v for k, v in _mrz_to_dict(mrz).items()}
+
+            return {
+                "verdict"           : "verifiable",
+                "match_score"       : match_result.match_score,
+                "document_type"     : document_type,
+                "document_name"     : match_result.document_name,
+                "template_available": True,
+                "fields"            : template_fields_out,
+                "mrz"               : mrz_dict_out,
+                "unmatched_fields"  : match_result.unmatched_fields,
+            }
+
+    # ── fallback path ──────────────────────────────────────────────────────
     english_lines = filter_latin(lines)
     english_text  = "\n".join(l.text for l in english_lines)
     mrz           = detect(english_lines)
 
-    mrz_verified   = mrz if (mrz and mrz.valid)     else None
-    mrz_unverified = mrz if (mrz and not mrz.valid) else None
-    source         = (
-        "mrz+gemma"         if mrz_verified   else
-        "mrz_partial+gemma" if mrz_unverified else
-        "gemma"
+    output = _build_pipeline_output(
+        english_lines, english_text, mrz, lines, confidence_avg
     )
 
-    output = PipelineOutput(
-        mrz_verified   = mrz_verified,
-        mrz_unverified = mrz_unverified,
-        english_lines  = english_lines,
-        english_text   = english_text,
-        source         = source,
-        confidence_avg = round(confidence_avg, 4),
-        raw_lines      = lines,
-    )
+    _save_visualization(image, output, Path(image_path), config)
 
-    image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    output_dir = Path(config.ocr_output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{Path(image_path).stem}_result.png"
-    visualize_matplotlib(image_bgr, output, str(output_path))
+    result                       = analyze(output, config, backend)
+    result["template_available"] = False
 
-    return analyze(output, config, backend)
+    extractions = result.get("result", {}).get("extractions", [])
+    if extractions:
+        image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        agent_vis_path = Path(config.ocr_output_dir) / f"{Path(image_path).stem}_agent.png"
+        visualize_agent_extraction(image_bgr, lines, extractions, str(agent_vis_path))
+
+    return result
 
 
-# Public API
-def process(file_path: str | list) -> dict | list[dict]:
+def process(file_path: str | list,
+            document_type: str | None = None) -> dict | list[dict]:
     config  = Config()
     backend = _get_backend(config)
 
     if isinstance(file_path, list):
-        return [_run(fp, config, backend) for fp in file_path]
+        return [_run(fp, config, backend, document_type) for fp in file_path]
 
-    return _run(file_path, config, backend)
+    return _run(file_path, config, backend, document_type)

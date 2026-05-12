@@ -11,12 +11,12 @@ class OllamaBackend(LLMBackend):
 
     def complete(self, prompt: str) -> str:
         response = requests.post(self._url, json={
-            "model" : self._model,
-            "prompt": prompt,
-            "stream": False,
+            "model"  : self._model,
+            "prompt" : prompt,
+            "stream" : False,
             "options": {
-                "temperature": 0.0,   
-                "num_predict": 256
+                "temperature": 0.0,
+                "num_predict": 612
             }
         })
         response.raise_for_status()

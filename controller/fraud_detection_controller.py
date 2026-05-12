@@ -43,12 +43,12 @@ def upload_file(file: UploadFile, path: str, id: str) -> Path:
     return path
 
 
-def verify(files: list[UploadFile], id: str) -> BaseVerifyResponse:
+def verify(files: list[UploadFile], id: str, document_type: str | None = None) -> BaseVerifyResponse:
     """Run the full pipeline on the uploaded files of a single document."""
     request_id = str(uuid.uuid4())
     started_at = time.perf_counter()
 
-    paths: List[Path] = [upload_file(files=f, path=FILES_PATH, id=id) for f in files]
+    paths: List[Path] = [upload_file(file=f, path=FILES_PATH, id=id) for f in files]
 
     timings: dict[str, int] = {}
 
@@ -70,7 +70,7 @@ def verify(files: list[UploadFile], id: str) -> BaseVerifyResponse:
         save_image(page, Path(FILES_PATH) / id / "processed")
         for page in processed_pages
     ]
-    ocr_results = ocr.process(ocr_paths)
+    ocr_results = ocr.process(ocr_paths, document_type=document_type)
     timings["ocr"] = int((time.perf_counter() - t0) * 1000)
 
     risk = policy.compute(

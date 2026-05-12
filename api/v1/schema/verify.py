@@ -16,6 +16,7 @@ from api.v1.schema.common import (
 class BaseVerifyRequest(BaseModel):
     document_images: list[UploadFile]
     id: str
+    document_type: str | None = None
 
 
 class BaseVerifyResponse(BaseModel):

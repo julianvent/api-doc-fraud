@@ -74,9 +74,12 @@ class PreprocessorModuleSchema(BaseModel):
 
 class OCRPageSchema(BaseModel):
     page_number: int
-    document_type: Optional[str]
-    verdict: Optional[str]
-    confidence_avg: float
+    document_type: Optional[str] = None
+    verdict: Optional[str] = None
+    confidence_avg: float = 0.0
+    fields: Optional[dict] = None
+    match_score: Optional[float] = None
+    flags: Optional[List[str]] = None
 
 
 class OCRModuleSchema(BaseModel):

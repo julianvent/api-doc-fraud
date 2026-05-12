@@ -11,7 +11,7 @@ _BASE = Path(__file__).parent
 class Config:
     confidence_threshold : float = 0.60
     ollama_url           : str   = "http://localhost:11434/api/generate"
-    ollama_model         : str   = "gemma3:4b"
+    ollama_model         : str   = "qwen2.5:7b"
     document_fields_path : str   = str(_BASE / "data" / "document_fields.json")
     ocr_output_dir       : str   = "service/ocr/output" 
 
@@ -65,6 +65,8 @@ class PipelineOutput:
     source         : str
     confidence_avg : float
     raw_lines      : list[TextLine]
+    template_available   : bool            = False
+    template_match_score : Optional[float] = None
 
     @property
     def mrz(self) -> Optional[MRZResult]:

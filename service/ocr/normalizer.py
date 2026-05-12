@@ -29,7 +29,7 @@ def normalize_date(value: str) -> str | None:
     clean = value.strip().upper()
     for fmt in DATE_FORMATS:
         try:
-            return datetime.strptime(clean, fmt).strftime("%Y-%m-%d")
+            return datetime.strptime(clean, fmt).strftime("%d/%m/%Y")
         except ValueError:
             continue
     return value
@@ -40,8 +40,6 @@ def normalize_fields(fields: dict) -> dict:
     for key, value in fields.items():
         if value is None:
             result[key] = None
-        elif key in DATE_FIELDS:
-            result[key] = normalize_date(str(value))
         else:
-            result[key] = value
+            result[key] = normalize_date(str(value))
     return result

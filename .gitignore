@@ -26,3 +26,5 @@ docker-compose.yml
 Dockerfile
 
 DotsOCR/
+
+templates/
