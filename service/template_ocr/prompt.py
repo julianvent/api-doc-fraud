@@ -91,9 +91,11 @@ ALWAYS classify as FIELD:
 
 _PROMPT_PASSPORT_EXPLICIT = """\
 ALWAYS classify as FIELD for this PASSPORT document:
-  (same rules as generic...)
+  - Bilingual labels where Spanish and English appear on separate lines
+    (e.g. "Apellidos" followed by "Surname") → treat as ONE field
+  - Short codes like "P", "MEX", and alphanumeric passport numbers are VALUES, not labels
 
-Extract EXACTLY these fields if present — no more, no less:
+Extract EXACTLY these 12 fields — no more, no less:
   - Tipo / Type → value: single letter document type code
   - Clave del país de expedición / Issuing state code → value: 3-letter country code
   - Pasaporte No. / Passport No. → value: alphanumeric passport number
@@ -101,31 +103,52 @@ Extract EXACTLY these fields if present — no more, no less:
   - Nombres / Given names → value: holder's given names
   - Nacionalidad / Nationality → value: nationality text
   - Fecha de nacimiento / Date of birth → value: birth date
-  - CURP / Personal No. → value: CURP code
+  - CURP / Personal No. → value: CURP alphanumeric code
   - Sexo / Sex → value: single letter sex code
   - Lugar de nacimiento / Place of birth → value: place name
   - Fecha de expedición / Date of issue → value: issue date
   - Fecha de caducidad / Expiry date → value: expiry date
+
+PAIRING RULES:
+  - Every value is directly below or directly to the right of its label
+  - Single letters ("P", "M") and short codes ("MEX") are VALUES, not labels
+  - Dates ("04 02 2022", "04 02 2028") are VALUES, not labels
+  - The long alphanumeric CURP code (e.g. "TUEA030527HYNRNNA2") is a VALUE, not a label
+ 
+CRITICAL — fields that MUST have DIFFERENT value_idx from each other:
+  - Field 8 (CURP) and Field 9 (Sexo) are in DIFFERENT rows → assign DIFFERENT value_idx
+  - Field 10 (Lugar de nacimiento) and Field 12 (Fecha de caducidad) are side-by-side
+    in the same row → assign DIFFERENT value_idx (one is on the left, one on the right)
+  - Field 11 (Fecha de expedición) and Field 12 (Fecha de caducidad) are DIFFERENT dates
+    in DIFFERENT rows → assign DIFFERENT value_idx
 """
 
 _PROMPT_VISA_EXPLICIT = """\
 ALWAYS classify as FIELD for this VISA document.
 Extract EXACTLY these fields if present — no more, no less:
-  - Visa number (alphanumeric code in top area like "VJ 9188237") → label is the code itself, value is the repeated code below
+  - Visa number (alphanumeric code in top area like "VJ 9010101") → label is the code itself, value is the repeated code below
   - उपनाम और नाम /Surname and Given Name → value: full name of holder
   - पामपाटमज्या /Passport No → value: passport number
-  - जारी करने की तिथि /Date of Issue → value: issue date
   - वीजा टाईप /Visa Type → value: visa type code (e.g. S-6)
-  - समाप्ति की तिथि /Date of Expiry → value: expiry date
   - प्रवेशों की संख्या No Of Entries → value: number of entries (e.g. DOUBLE)
+  - जारी करने की तिथि /Date of Issue → value: issue date
+  - समाप्ति की तिथि /Date of Expiracy → value: expiry date
   - विशेष पृष्ठांकन /Special Endorsement → value: endorsement text below it
 
+PAIRING RULES — CRITICAL:
+  - Dates like "11/01/2026", "10/08/2026" → always VALUES, NEVER labels
+  - Codes like "S-6", "DOUBLE" → always VALUES, NEVER labels
+  - Passport numbers like "N08181818" → always a VALUE for the "Passport No" label above it
+  - NEVER create a field where label_text is a date, a number, or a short alphanumeric code
+  - The label is always the Hindi/English descriptive text ABOVE or to the LEFT of the value
+  - If you see a date or code as a standalone element, look for its label above it
+
 IMPORTANT — some elements contain both label and value separated by \\n:
-Example: "जगे कानेकी तिथि /Date of Issue\\n11/11/2011"
-→ label_text should be ONLY "जगे कानेकी तिथि /Date of Issue"
-→ value_text should be ONLY "11/11/2011"
-→ use the SAME index for both label_idx and value_idx
-Never include the value in the label_text field.
+  Example: "जगे कानेकी तिथि /Date of Issue\\n11/11/2011"
+  → label_text should be ONLY "जगे कानेकी तिथि /Date of Issue"
+  → value_text should be ONLY "11/11/2011"
+  → use the SAME index for both label_idx and value_idx
+  Never include the value in the label_text field.
 
 STRICTLY IGNORE — do NOT include under any circumstances:
   - Any text in Devanagari script that is NOT one of the labels listed above

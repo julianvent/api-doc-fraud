@@ -157,6 +157,45 @@ def _is_mrz(text: str) -> bool:
     mrz_chars = sum(1 for c in text if c.isupper() or c.isdigit() or c == "<")
     return mrz_chars / max(len(text), 1) > 0.85 and len(text) > 20
 
+def _presplit_elements(
+    elements: list[TemplateTextLine],
+) -> tuple[list[TemplateTextLine], dict[int, int]]:
+    """
+    Separa elementos que contienen label\\nvalue en dos elementos distintos.
+    Devuelve la lista nueva y un mapping new_idx → original_idx.
+    La bbox se divide verticalmente entre label y value.
+    """
+    result  : list[TemplateTextLine] = []
+    mapping : dict[int, int]         = {}
+
+    for orig_idx, elem in enumerate(elements):
+        if "\n" in elem.text:
+            parts = elem.text.split("\n", 1)
+            top, bottom = _split_bbox_vertically(elem.bbox)
+
+            top_bbox = np.array(
+                [[top[0], top[1]], [top[2], top[1]],
+                 [top[2], top[3]], [top[0], top[3]]], dtype=np.int32
+            )
+            bot_bbox = np.array(
+                [[bottom[0], bottom[1]], [bottom[2], bottom[1]],
+                 [bottom[2], bottom[3]], [bottom[0], bottom[3]]], dtype=np.int32
+            )
+
+            mapping[len(result)] = orig_idx
+            result.append(TemplateTextLine(
+                text=parts[0].strip(), bbox=top_bbox, category=elem.category
+            ))
+            mapping[len(result)] = orig_idx
+            result.append(TemplateTextLine(
+                text=parts[1].strip(), bbox=bot_bbox, category=elem.category
+            ))
+        else:
+            mapping[len(result)] = orig_idx
+            result.append(elem)
+
+    return result, mapping
+
 # LLM pairer
 def _call_llm(
     elements: list[TemplateTextLine],
@@ -441,22 +480,7 @@ def extract_template(
 ) -> dict:
     """
     Genera el template de campos de un documento a partir de una imagen
-    de referencia limpia.
-
-    Devuelve:
-        {
-            "fields": [
-                {
-                    "key":          str,
-                    "label":        str,
-                    "label_region": {"x1", "y1", "x2", "y2"},
-                    "value_region": {"x1", "y1", "x2", "y2"},
-                },
-                ...
-            ],
-            "n_fields": int,
-            "engine":   "dots+llm"
-        }
+    de referencia
     """
     if config is None:
         config = TemplateConfig()
@@ -473,11 +497,14 @@ def extract_template(
         return {"fields": [], "n_fields": 0, "engine": "dots+llm"}
 
     elements_filtered = [e for e in elements if not _is_mrz(e.text)]
+
     print(f"  [TemplateOCR] {len(elements) - len(elements_filtered)} MRZ lines excluidas")
+    
+    elements_clean, idx_mapping = _presplit_elements(elements_filtered)
     
     print(f"  [TemplateOCR] Paso 2/2 — LLM identificando label-value pairs...")
     pairs, anchors = _call_llm(
-        elements_filtered, 
+        elements_clean, 
         config.ollama_url,
         config.ollama_model, 
         img_w, img_h, 
@@ -492,7 +519,7 @@ def extract_template(
 
     anchor_indices = {a.get("idx") for a in anchors if "idx" in a}
 
-    fields = _build_fields(elements_filtered, pairs, img_w, img_h, anchor_indices) #, expand_x=expand_x)
+    fields = _build_fields(elements_clean, pairs, img_w, img_h, anchor_indices) #, expand_x=expand_x)
     if  document_type.lower() == "passport":
         fields = _merge_bilingual_fields(fields)
 
