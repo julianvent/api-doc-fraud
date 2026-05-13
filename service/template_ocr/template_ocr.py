@@ -20,7 +20,7 @@ def upload(
     config = TemplateConfig()
 
     # Extraer campos con dots.ocr + LLM
-    result = extract_template(img_path, config=config, document_type=document_type, include_type=include_type, explicit=True) #, expand_x=True) # False para x's del value fijas
+    result = extract_template(img_path, config=config, document_type=document_type, include_type=include_type, explicit=False) #, expand_x=True) # False para x's del value fijas
     fields = result["fields"]
     #anchors = result.get("anchors", [])
 

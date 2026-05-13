@@ -59,6 +59,7 @@ IGNORE for this VISA document (classify as anchor):
   - "भारत गणराज्य REPUBLIC OF INDIA" — country header, always anchor
   - Any text about registration requirements or purpose restrictions
   - The large "VISA" watermark text
+  - Any watermark or background text that is not a field label
 """
 
 _PROMPT_PASSPORT_GENERIC = """\

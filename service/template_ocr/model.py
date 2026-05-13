@@ -21,7 +21,7 @@ class TemplateConfig:
         default_factory=lambda: os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
     )
     ollama_model: str = field(
-        default_factory=lambda: os.getenv("OLLAMA_MODEL", "gemma3:4b")
+        default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen2.5:7b") #gemma3:4b
     )
 
     output_dir: str = "service/template_ocr/output"
