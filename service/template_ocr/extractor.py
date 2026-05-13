@@ -435,6 +435,8 @@ def _merge_bilingual_fields(fields: list[dict]) -> list[dict]:
     Fusiona campos duplicados que son el mismo label en dos idiomas.
     Detecta duplicados por value_region idéntico o muy similar.
     """
+    MAX_LABEL_Y_DISTANCE = 0.06  # 6% del alto de la imagen
+
     merged  : list[dict] = []
     used_idx: set        = set()
 
@@ -448,17 +450,25 @@ def _merge_bilingual_fields(fields: list[dict]) -> list[dict]:
             if j <= i or j in used_idx:
                 continue
             # Mismo value_region → mismo campo en otro idioma
-            if f["value_region"] == g["value_region"]:
-                duplicate = j
-                break
+            if f["value_region"] != g["value_region"]:
+                continue
+
+            # Guarda espacial: los labels deben estar en líneas contiguas
+            f_label_y_center = (f["label_region"]["y1"] + f["label_region"]["y2"]) / 2
+            g_label_y_center = (g["label_region"]["y1"] + g["label_region"]["y2"]) / 2
+            if abs(f_label_y_center - g_label_y_center) > MAX_LABEL_Y_DISTANCE:
+                continue  # Labels muy separados → campos distintos, no fusionar
+
+            duplicate = j
+            break
 
         if duplicate is not None:
             g = fields[duplicate]
-            # Fusionar: combinar los dos labels en uno bilingüe
+            # Fusionar los dos labels en uno bilingüe
             merged.append({
                 "key":          f["key"],
                 "label":        f"{f['label']} / {g['label']}",
-                "label_region": f["label_region"],  # region del primer label
+                "label_region": f["label_region"],
                 "value_region": f["value_region"],
             })
             used_idx.add(i)
@@ -509,7 +519,7 @@ def extract_template(
         config.ollama_model, 
         img_w, img_h, 
         document_type=document_type,
-        explicit=explicit) # Aqui se pueden devolver los anchors
+        explicit=explicit)
     print(f"  [TemplateOCR] {len(pairs)} pares identificados")
 
     if not pairs:
@@ -519,8 +529,9 @@ def extract_template(
 
     anchor_indices = {a.get("idx") for a in anchors if "idx" in a}
 
-    fields = _build_fields(elements_clean, pairs, img_w, img_h, anchor_indices) #, expand_x=expand_x)
-    if  document_type.lower() == "passport":
+    fields = _build_fields(elements_clean, pairs, img_w, img_h, anchor_indices)
+
+    if document_type.lower() == "passport":
         fields = _merge_bilingual_fields(fields)
 
     return {
