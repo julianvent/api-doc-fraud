@@ -54,6 +54,7 @@ ALWAYS classify as FIELD for this VISA document:
   - The visa number in the top area (alphanumeric code like "VJ 9188237") 
     IS a field — classify the label above it and the code as its value
   - Short data values below or next to labels (names, dates, codes, numbers)
+  - उपनाम और नाम /Surname and Given Name → value: full name of holder, it's value is a SEPARATE element with a different idx than the label
 
 IGNORE for this VISA document (classify as anchor):
   - "भारत गणराज्य REPUBLIC OF INDIA" — country header, always anchor
@@ -128,13 +129,13 @@ _PROMPT_VISA_EXPLICIT = """\
 ALWAYS classify as FIELD for this VISA document.
 Extract EXACTLY these fields if present — no more, no less:
   - Visa number (alphanumeric code in top area like "VJ 9010101") → label is the code itself, value is the repeated code below
-  - उपनाम और नाम /Surname and Given Name → value: full name of holder
+  - उपनाम और नाम /Surname and Given Name → value: full name of holder, it's value is a SEPARATE element with a different idx than the label
   - पामपाटमज्या /Passport No → value: passport number
   - वीजा टाईप /Visa Type → value: visa type code (e.g. S-6)
   - प्रवेशों की संख्या No Of Entries → value: number of entries (e.g. DOUBLE)
   - जारी करने की तिथि /Date of Issue → value: issue date
   - समाप्ति की तिथि /Date of Expiracy → value: expiry date
-  - विशेष पृष्ठांकन /Special Endorsement → value: endorsement text below it
+  - विशेष पृष्ठांकन /Special Endorsement → value: free endorsement text below it
 
 PAIRING RULES — CRITICAL:
   - Dates like "11/01/2026", "10/08/2026" → always VALUES, NEVER labels

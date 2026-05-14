@@ -219,7 +219,7 @@ def _call_llm(
     try:
         response = requests.post(
             ollama_url,
-            json={"model": ollama_model, "prompt": prompt, "stream": False},
+            json={"model": ollama_model, "prompt": prompt, "stream": False, "temperature": 0},
             timeout=120,
         )
         response.raise_for_status()
