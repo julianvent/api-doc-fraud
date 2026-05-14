@@ -216,17 +216,24 @@ def visualize_template_match(image_bgr: np.ndarray,
     print(f"Saved template match: {output_path}")
 
 
-def _find_line_by_text(lines: list[TextLine], target: str, threshold: int = 70) -> TextLine | None:
+def _find_line_by_text(lines: list[TextLine], target: str, threshold: int = 60) -> TextLine | None:
     if not target or not lines:
         return None
     from rapidfuzz import fuzz
-    best = max(
-        ((l, fuzz.ratio(l.text, target)) for l in lines),
-        key=lambda pair: pair[1],
-        default=(None, 0),
-    )
-    line, score = best
-    return line if score >= threshold else None
+    target_clean = str(target).strip()
+    best_line = None
+    best_score = 0
+    for l in lines:
+        text_clean = l.text.strip()
+        score = max(
+            fuzz.ratio(text_clean, target_clean),
+            fuzz.partial_ratio(text_clean, target_clean),
+            fuzz.token_set_ratio(text_clean, target_clean),
+        )
+        if score > best_score:
+            best_score = score
+            best_line = l
+    return best_line if best_score >= threshold else None
 
 
 def _bbox_center_pixels(line: TextLine, w: int, h: int) -> tuple[float, float]:
@@ -262,7 +269,7 @@ def _find_label_near(lines: list[TextLine], value_line: TextLine, exclude: set) 
 
 def visualize_agent_extraction(image_bgr: np.ndarray,
                                 lines: list[TextLine],
-                                extractions: list,
+                                fields: dict,
                                 output_path: str = "output/agent_extraction.png"):
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     fig, ax = plt.subplots(1, 1, figsize=(14, 10))
@@ -284,56 +291,35 @@ def visualize_agent_extraction(image_bgr: np.ndarray,
             linewidth=0.5, edgecolor="#9ca3af", facecolor="none", alpha=0.4
         ))
 
-    paired = 0
-    for ext in (extractions or []):
-        key        = ext.get("key", "")
-        label_text = ext.get("label_text", "")
-        value_text = ext.get("value_text", "")
+    matched = 0
+    total = 0
+    for key, value in (fields or {}).items():
+        if not value:
+            continue
+        total += 1
+        value_line = _find_line_by_text(lines, str(value))
+        if value_line is None:
+            continue
 
-        label_line = _find_line_by_text(lines, label_text) if label_text else None
-        value_line = _find_line_by_text(lines, value_text) if value_text else None
-
-        if label_line is not None:
-            pixel_bbox = _to_pixels(label_line.bbox, w, h)
-            xs = [pt[0] for pt in pixel_bbox]
-            ys = [pt[1] for pt in pixel_bbox]
-            x1, y1 = min(xs), min(ys)
-            x2, y2 = max(xs), max(ys)
-            ax.add_patch(patches.Rectangle(
-                (x1, y1), x2 - x1, y2 - y1,
-                linewidth=1.5, edgecolor="#3b82f6", facecolor="none"
-            ))
-            ax.text(x1, y1 - 2, f"L:{key}", fontsize=5, color="#3b82f6", va="bottom")
-
-        if value_line is not None:
-            pixel_bbox = _to_pixels(value_line.bbox, w, h)
-            xs = [pt[0] for pt in pixel_bbox]
-            ys = [pt[1] for pt in pixel_bbox]
-            x1, y1 = min(xs), min(ys)
-            x2, y2 = max(xs), max(ys)
-            ax.add_patch(patches.Rectangle(
-                (x1, y1), x2 - x1, y2 - y1,
-                linewidth=2, edgecolor="#22c55e", facecolor="none"
-            ))
-            ax.text(x2, y2 + 2, f"V:{key}", fontsize=5, color="#22c55e",
-                    va="top", ha="right")
-
-        if label_line is not None and value_line is not None:
-            lcx, lcy = _bbox_center_pixels(label_line, w, h)
-            vcx, vcy = _bbox_center_pixels(value_line, w, h)
-            ax.annotate(
-                "", xy=(vcx, vcy), xytext=(lcx, lcy),
-                arrowprops=dict(arrowstyle="->", color="#f59e0b", lw=0.8, alpha=0.7),
-            )
-            paired += 1
+        pixel_bbox = _to_pixels(value_line.bbox, w, h)
+        xs = [pt[0] for pt in pixel_bbox]
+        ys = [pt[1] for pt in pixel_bbox]
+        x1, y1 = min(xs), min(ys)
+        x2, y2 = max(xs), max(ys)
+        ax.add_patch(patches.Rectangle(
+            (x1, y1), x2 - x1, y2 - y1,
+            linewidth=2, edgecolor="#22c55e", facecolor="none"
+        ))
+        ax.text(x2, y2 + 2, key, fontsize=5, color="#22c55e",
+                va="top", ha="right")
+        matched += 1
 
     legend = [
         patches.Patch(edgecolor="#9ca3af", facecolor="none", label="OCR line"),
-        patches.Patch(edgecolor="#3b82f6", facecolor="none", label="Label (agent)"),
         patches.Patch(edgecolor="#22c55e", facecolor="none", label="Value (agent)"),
     ]
     ax.legend(handles=legend, loc="upper right", fontsize=8)
-    ax.set_title(f"Agent extraction: {paired}/{len(extractions or [])} pairs matched",
+    ax.set_title(f"Agent extraction: {matched}/{total} values matched",
                  fontsize=10, pad=10)
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)

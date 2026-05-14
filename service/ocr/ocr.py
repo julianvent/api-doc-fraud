@@ -320,11 +320,11 @@ def _run(image_path: str | Path,
     result                       = analyze(output, config, backend)
     result["template_available"] = False
 
-    extractions = result.get("result", {}).get("extractions", [])
-    if extractions:
+    agent_fields = result.get("result", {}).get("fields", {})
+    if agent_fields:
         image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         agent_vis_path = Path(config.ocr_output_dir) / f"{Path(image_path).stem}_agent.png"
-        visualize_agent_extraction(image_bgr, lines, extractions, str(agent_vis_path))
+        visualize_agent_extraction(image_bgr, lines, agent_fields, str(agent_vis_path))
 
     return result
 
