@@ -86,7 +86,29 @@ def _call_llm(
         else:
             return []
 
-    return data.get("fields", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict):
+        return {}
+    # Devolver las categorias tal como vienen del modelo
+    return {
+        "personal": data.get("personal", []),
+        "document": data.get("document", []),
+    }
+
+
+def _normalize_category(raw: list, category: str, used_keys: set) -> list[dict]:
+    """Limpia y normaliza una lista de fields de una categoría."""
+    result = []
+    for f in raw:
+        label = str(f.get("label", "")).strip()
+        ftype = str(f.get("type", "text")).strip()
+        if not label:
+            continue
+        llm_key  = str(f.get("key", "")).strip()
+        base_key = _slugify(llm_key if llm_key else label)
+        key      = _unique_key(base_key, used_keys)
+        used_keys.add(key)
+        result.append({"key": key, "label": label, "type": ftype})
+    return result
 
 
 def extract_template(
@@ -96,35 +118,22 @@ def extract_template(
 ) -> dict:
     """
     Identifica los campos de un documento a partir de su imagen
-    Devuelve una lista de {key, label, type}
+    Devuelve {personal: [...], document: [...]} con {key, label, type}
     """
     if config is None:
         config = TemplateConfig()
 
     print(f"  [TemplateOCR] Enviando imagen a {config.ollama_model}...")
-    raw_fields = _call_llm(img_path, config.ollama_url, config.ollama_model, document_type)
+    raw = _call_llm(img_path, config.ollama_url, config.ollama_model, document_type)
 
-    if not raw_fields:
+    if not raw:
         print("  [TemplateOCR] Warning: el modelo no devolvió campos")
-        return {"fields": [], "n_fields": 0}
+        return {"personal": [], "document": [], "n_fields": 0}
 
-    # Normalizar y generar keys en Python
-    used_keys : set        = set()
-    fields    : list[dict] = []
+    used_keys: set = set()
+    personal  = _normalize_category(raw.get("personal", []), "personal", used_keys)
+    document  = _normalize_category(raw.get("document", []), "document", used_keys)
 
-    for f in raw_fields:
-        label = str(f.get("label", "")).strip()
-        ftype = str(f.get("type",  "text")).strip()
-        if not label:
-            continue
-
-        # Usar el key que dio el LLM como base, pero regenerarlo limpio en Python
-        llm_key  = str(f.get("key", "")).strip()
-        base_key = _slugify(llm_key if llm_key else label)
-        key      = _unique_key(base_key, used_keys)
-        used_keys.add(key)
-
-        fields.append({"key": key, "label": label, "type": ftype})
-
-    print(f"  [TemplateOCR] {len(fields)} campos identificados")
-    return {"fields": fields, "n_fields": len(fields)}
+    n = len(personal) + len(document)
+    print(f"  [TemplateOCR] {n} campos identificados ({len(personal)} personal, {len(document)} document)")
+    return {"personal": personal, "document": document, "n_fields": n}

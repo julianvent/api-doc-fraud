@@ -11,4 +11,4 @@ class BaseDocumentTemplateResponse(BaseModel):
     document_name: str
     document_type: str
     img_path     : str
-    fields       : list[TemplateField]
+    fields       : dict[str, list[TemplateField]]  # {"personal": [...], "document": [...]}
