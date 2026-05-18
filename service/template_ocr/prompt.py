@@ -3,6 +3,14 @@ You are analyzing an official identity document image (passport, visa, ID card, 
 Your task is to identify all data fields and classify them into two categories.
 
 ──────────────────────────────────────────────
+CRITICAL RULE — NO HALLUCINATION
+──────────────────────────────────────────────
+
+Only report fields that are EXPLICITLY VISIBLE as printed text in the document image.
+Do NOT infer, assume or add fields based on what you know about document types.
+If a field is not visibly printed in the image, do not include it.
+
+──────────────────────────────────────────────
 CATEGORY DEFINITIONS
 ──────────────────────────────────────────────
 
@@ -29,9 +37,15 @@ FIELD FORMAT
 ──────────────────────────────────────────────
 
 For each field return:
-  key   : snake_case identifier in English (ASCII only, lowercase)
-  label : label text as it appears in the document, preferring the English version
-          if bilingual; if only non-Latin script is present, transliterate to English
+  key   : snake_case derived ONLY from the English label text — strip punctuation,
+          replace spaces with underscores, lowercase. No extra normalization.
+          Example: "Expiry date" → "expiry_date", "Passport No." → "passport_no"
+          Exception: if the document number has no label, use the code itself as key.
+  label : if the field label is bilingual, use ONLY the English portion exactly as
+          it appears in the document — do not include the other language.
+          If the label is only in a non-Latin script, transliterate to English.
+          Do NOT translate, paraphrase or rename — copy the English text verbatim.
+          Example: "Fecha de caducidad/ Expiry date" → label = "Expiry date"
   type  : one of the allowed types below
 
 Allowed types:
@@ -44,14 +58,26 @@ Allowed types:
   "entry_count"   → number of permitted entries: SINGLE, DOUBLE, MULTIPLE
 
 ──────────────────────────────────────────────
+COMPOUND LABELS
+──────────────────────────────────────────────
+
+If a single label covers multiple attributes, keep it as ONE field — do not split.
+This includes labels with "and" / "y" connecting two attributes.
+Example: "Surname and Given Name" → ONE field, key="surname_and_given_name", label="Surname and Given Name"
+Example: "Apellidos y Nombres" → ONE field
+Never return separate fields for "Surname" and "Given Name" if they share one label.
+
+──────────────────────────────────────────────
 DOCUMENT NUMBER DETECTION
 ──────────────────────────────────────────────
 
-If you see a prominent alphanumeric code in the document that does not have an explicit
-label but appears isolated in a header or corner area, it is most likely the document
-number — include it under "document" with type "alphanumeric".
+If the document has an explicit labeled field for the document number, use that field.
+Only apply this fallback when NO explicit document number field exists:
+  → if you see a prominent standalone alphanumeric code in a header or corner area
+    with no label, it is most likely the document number — include it under "document"
+    with type "alphanumeric" and use the code itself as the label.
 If a Machine Readable Zone (MRZ) is present, you may read it to confirm
-or recover the document number, but do NOT include the MRZ lines themselves as fields.
+or recover the document number if missing, but do NOT include MRZ lines as fields.
 
 ──────────────────────────────────────────────
 ALWAYS IGNORE — never include as fields
@@ -63,8 +89,13 @@ ALWAYS IGNORE — never include as fields
   - Operational instructions printed on the document
     (e.g. "REGISTRATION WITHIN 14 DAYS", "NOT VALID FOR PROHIBITED AREAS",
     "CHANGE OF PURPOSE NOT ALLOWED", "VALID ONLY FOR...", any restriction notice)
-  - Signature line labels ("Holder's Signature", "Firma del Titular")
-  - Authority or issuing officer names and office names
+  - Signature line labels ("Holder's Signature", "Firma del Titular", etc.)
+  - Authority labels and everything associated with them: any label containing
+    "Authority", "Autoridad", "Issuing Officer", "Signed by" or similar,
+    AND any field whose visible value is a person's full name acting in official
+    capacity or the name of a government office / department
+    (e.g. "NAIA ANALEAH MENDEZ GOU", "OF. PASAPORTES YUCATAN") — ignore both
+    the label and its value entirely
   - Standalone serial numbers that are clearly internal printing codes, not document IDs
 
 {document_specific}
@@ -80,8 +111,8 @@ Return ONLY a valid JSON object, no explanation, no markdown:
     {{"key": "date_of_birth", "label": "Date of birth", "type": "date"}}
   ],
   "document": [
-    {{"key": "document_no", "label": "Document No.", "type": "alphanumeric"}},
-    {{"key": "date_of_expiry", "label": "Date of expiry", "type": "date"}}
+    {{"key": "passport_no", "label": "Passport No", "type": "alphanumeric"}},
+    {{"key": "expiry_date", "label": "Expiry date", "type": "date"}}
   ]
 }}
 """
@@ -89,7 +120,7 @@ Return ONLY a valid JSON object, no explanation, no markdown:
 _DOC_SPECIFIC_PASSPORT = """\
 This is a PASSPORT.
 Bilingual labels (two languages on consecutive lines) count as ONE field — use the
-English version as the label.
+English version as the label exactly as printed.
 """
 
 _DOC_SPECIFIC_VISA = """\
@@ -97,7 +128,8 @@ This is a VISA.
 The passport number of the holder printed on this visa is PERSONAL information
 (it identifies the person, not this visa).
 The visa number itself (usually top-right, alphanumeric) is DOCUMENT information.
-Bilingual labels (two scripts/languages) count as ONE field — use the English version.
+Bilingual labels (two scripts/languages) count as ONE field — use the English version as the label exactly as printed.
+Date of issue and date of expiry are DOCUMENT fields
 """
 
 _DOC_SPECIFIC_GENERIC = """\
