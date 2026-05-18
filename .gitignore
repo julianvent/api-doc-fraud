@@ -8,13 +8,15 @@ output/
 .claude
 .vscode
 
-# Model weights
 *.pt
 *.pth
+*.pth.tar
+service/tampering/weights/
 
-# Per-request artifacts produced by the services
 service/tampering/output/*
 !service/tampering/output/.gitkeep
+service/tampering/test_output/
+service/tampering/test_output_eval/
 service/preprocessor/output/*
 !service/preprocessor/output/.gitkeep
 service/ocr/output/*

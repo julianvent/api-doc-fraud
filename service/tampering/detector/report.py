@@ -1,16 +1,6 @@
-"""Report contract for the image-tampering module.
+"""PageReport contract for the tampering module. All fields JSON-serializable.
 
-A `PageReport` is produced for every page and contains:
-  - A top-level verdict (ACCEPT / REVIEW / HARD_REJECT) with human-readable
-    reasons — this is what downstream services act on.
-  - Per-detector evidence (scores, regions, skip_reason) kept independent from
-    the decision rule, so detectors can be swapped or added without touching
-    the verdict logic.
-  - Face localization output (YuNet is a localizer, not a forensic detector).
-  - Paths to artifacts persisted to disk.
-  - Execution metadata for observability and reproducibility.
-
-All fields are JSON-serializable via `dataclasses.asdict()`.
+The module produces a continuous `fraud_score`; the consumer decides policy.
 """
 from __future__ import annotations
 
@@ -19,16 +9,27 @@ from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 
-class Verdict(str, Enum):
-    ACCEPT = "ACCEPT"
-    REVIEW = "REVIEW"
-    HARD_REJECT = "HARD_REJECT"
+class RiskLabel(str, Enum):
+    """Bucket derived from `fraud_score`: <0.30 / [0.30,0.70) / >=0.70."""
+    LEGITIMATE = "LEGITIMATE"
+    SUSPICIOUS = "SUSPICIOUS"
+    LIKELY_MANIPULATED = "LIKELY_MANIPULATED"
 
 
-class Confidence(str, Enum):
+class Reliability(str, Enum):
+    """LOW: core detector missing. MEDIUM: optional signal skipped. HIGH: all ran."""
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
     LOW = "LOW"
+
+
+class Severity(str, Enum):
+    """By saturation: CRITICAL ≥1.0, HIGH ≥0.7, MEDIUM ≥0.4, LOW >0, INFO 0."""
+    CRITICAL = "CRITICAL"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    INFO = "INFO"
 
 
 class Zone(str, Enum):
@@ -59,7 +60,7 @@ class Region:
 
 @dataclass(frozen=True)
 class FaceDetection:
-    """Output of the face localizer. NOT a forensic signal on its own."""
+    """Face localizer output. Not a forensic signal."""
     detected: bool
     bbox: Optional[Tuple[int, int, int, int]] = None
     confidence: float = 0.0
@@ -77,17 +78,24 @@ class DocTamperResult:
 
 
 @dataclass(frozen=True)
-class MVSSNetResult:
+class TruForResult:
     ran: bool
     skip_reason: Optional[str] = None
-    # Image-level score: mean of the top-1% most suspicious pixels in the
-    # face-crop heatmap. Robust to single-pixel outliers, unlike max.
     score: float = 0.0
-    # Fraction of the face crop covered by the largest contiguous
-    # suspicious component (pixels >= 0.5). Distinguishes one real spliced
-    # region (high fraction) from scattered noise (low fraction, even when
-    # the score is high).
     largest_region_area_fraction: float = 0.0
+
+
+@dataclass(frozen=True)
+class DocumentLocation:
+    """Axis-aligned doc crop from DocAligner. Never warped."""
+    localized: bool
+    bbox: Optional[Tuple[int, int, int, int]] = None
+    bbox_with_padding: Optional[Tuple[int, int, int, int]] = None
+    quad: Optional[Tuple[Tuple[float, float], ...]] = None
+    frame_shape: Tuple[int, int] = (0, 0)
+    area_fraction_of_frame: float = 0.0
+    validation_status: str = "OK"
+    fallback_reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -95,9 +103,28 @@ class Artifacts:
     source_image: Optional[str] = None
     doctamper_heatmap: Optional[str] = None
     doctamper_overlay: Optional[str] = None
-    mvssnet_heatmap: Optional[str] = None
+    trufor_heatmap: Optional[str] = None
     face_crop: Optional[str] = None
     combined_overlay: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One reason behind `fraud_score`. `contribution` may be negative."""
+    detector: str
+    signal: str
+    severity: Severity
+    message: str
+    observed_value: float
+    reference_threshold: float
+    contribution: float
+
+
+@dataclass(frozen=True)
+class Timings:
+    """Wall-clock times. `per_detector` keyed by detector name."""
+    total_ms: int
+    per_detector: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -106,7 +133,6 @@ class ExecutionMetadata:
     page_index: int
     page_count: int
     image_shape: Tuple[int, int]
-    execution_ms: Dict[str, int] = field(default_factory=dict)
     thresholds_used: Dict[str, float] = field(default_factory=dict)
     model_versions: Dict[str, str] = field(default_factory=dict)
 
@@ -114,21 +140,29 @@ class ExecutionMetadata:
 @dataclass(frozen=True)
 class PageReport:
     source: str
-    verdict: Verdict
-    verdict_score: float
-    verdict_reasons: List[str]
-    confidence: Confidence
+    # Primary outputs
+    fraud_score: float
+    risk_label: RiskLabel
+    reliability: Reliability
+    findings: List[Finding]
+    timings: Timings
+    # Per-detector raw evidence
     face: FaceDetection
     doctamper: DocTamperResult
-    mvssnet: MVSSNetResult
+    trufor: TruForResult
+    face_trufor: TruForResult
+    # Artifacts and context
     artifacts: Artifacts
     metadata: ExecutionMetadata
+    document_location: DocumentLocation = field(
+        default_factory=lambda: DocumentLocation(localized=False),
+    )
 
 
-_VERDICT_GLYPH = {
-    Verdict.ACCEPT: "[ACCEPT]",
-    Verdict.REVIEW: "[REVIEW]",
-    Verdict.HARD_REJECT: "[REJECT]",
+_LABEL_GLYPH = {
+    RiskLabel.LEGITIMATE: "[LEGITIMATE]       ",
+    RiskLabel.SUSPICIOUS: "[SUSPICIOUS]       ",
+    RiskLabel.LIKELY_MANIPULATED: "[LIKELY_MANIPULATED]",
 }
 
 
@@ -138,21 +172,28 @@ def format_report(report: PageReport) -> str:
         "=" * 72,
         f"  {report.source}  (page {meta.page_index}/{meta.page_count})",
         "=" * 72,
-        f"  Verdict     : {_VERDICT_GLYPH[report.verdict]} {report.verdict.value}  "
-        f"(score={report.verdict_score:.3f}, confidence={report.confidence.value})",
+        f"  Fraud score : {report.fraud_score:.3f}  "
+        f"{_LABEL_GLYPH[report.risk_label]} "
+        f"reliability={report.reliability.value}",
         f"  Document    : {meta.document_type.value}  "
         f"shape={meta.image_shape[0]}x{meta.image_shape[1]}",
     ]
 
-    if report.verdict_reasons:
-        lines.append("  Reasons     :")
-        for reason in report.verdict_reasons:
-            lines.append(f"    - {reason}")
+    if report.findings:
+        lines.append("  Findings    :")
+        for f in report.findings:
+            sign = "+" if f.contribution >= 0 else ""
+            lines.append(
+                f"    [{f.severity.value:8s}] {f.detector}/{f.signal}  "
+                f"({sign}{f.contribution:.2f})  {f.message}"
+            )
 
     lines.append("")
+    lines.append(_format_document_location(report.document_location))
     lines.append(_format_face(report.face))
     lines.append(_format_doctamper(report.doctamper))
-    lines.append(_format_mvssnet(report.mvssnet))
+    lines.append(_format_trufor(report.trufor, label="TruFor      "))
+    lines.append(_format_trufor(report.face_trufor, label="FaceTruFor  "))
 
     if report.doctamper.regions:
         lines.append("")
@@ -168,7 +209,7 @@ def format_report(report: PageReport) -> str:
     artifacts = report.artifacts
     any_artifact = any((
         artifacts.doctamper_heatmap, artifacts.doctamper_overlay,
-        artifacts.mvssnet_heatmap, artifacts.combined_overlay,
+        artifacts.trufor_heatmap, artifacts.combined_overlay,
     ))
     if any_artifact:
         lines.append("")
@@ -177,18 +218,33 @@ def format_report(report: PageReport) -> str:
             lines.append(f"    doctamper heatmap : {artifacts.doctamper_heatmap}")
         if artifacts.doctamper_overlay:
             lines.append(f"    doctamper overlay : {artifacts.doctamper_overlay}")
-        if artifacts.mvssnet_heatmap:
-            lines.append(f"    mvssnet heatmap   : {artifacts.mvssnet_heatmap}")
+        if artifacts.trufor_heatmap:
+            lines.append(f"    trufor heatmap    : {artifacts.trufor_heatmap}")
         if artifacts.face_crop:
             lines.append(f"    face crop         : {artifacts.face_crop}")
         if artifacts.combined_overlay:
             lines.append(f"    combined overlay  : {artifacts.combined_overlay}")
 
-    if meta.execution_ms:
-        timings = ", ".join(f"{k}={v}ms" for k, v in meta.execution_ms.items())
-        lines.append(f"\n  Timings     : {timings}")
+    t = report.timings
+    if t.per_detector:
+        per = ", ".join(f"{k}={v}ms" for k, v in t.per_detector.items())
+        lines.append(f"\n  Timings     : total={t.total_ms}ms ({per})")
+    else:
+        lines.append(f"\n  Timings     : total={t.total_ms}ms")
 
     return "\n".join(lines)
+
+
+def _format_document_location(loc: DocumentLocation) -> str:
+    if loc.localized and loc.bbox_with_padding is not None:
+        x, y, w, h = loc.bbox_with_padding
+        return (
+            f"  Document    : localized  bbox=({x},{y},{w},{h})  "
+            f"area_of_frame={loc.area_fraction_of_frame:.1%}"
+        )
+    if loc.fallback_reason:
+        return f"  Document    : full-frame fallback ({loc.fallback_reason})"
+    return "  Document    : full-frame (not localized)"
 
 
 def _format_face(face: FaceDetection) -> str:
@@ -214,10 +270,10 @@ def _format_doctamper(result: DocTamperResult) -> str:
     )
 
 
-def _format_mvssnet(result: MVSSNetResult) -> str:
+def _format_trufor(result: TruForResult, label: str = "TruFor      ") -> str:
     if not result.ran:
-        return f"  MVSS-Net    : skipped ({result.skip_reason})"
+        return f"  {label}: skipped ({result.skip_reason})"
     return (
-        f"  MVSS-Net    : score={result.score:.3f}  "
+        f"  {label}: score={result.score:.3f}  "
         f"largest_region={result.largest_region_area_fraction:.2%}"
     )

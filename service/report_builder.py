@@ -22,7 +22,13 @@ from api.v1.schema.verify import BaseVerifyResponse
 from service.metadata.analyzer import MetadataReport
 from service.policy import RiskAggregate
 from service.preprocessor.app.models import ProcessedPage
-from service.tampering.detector import PageReport
+from service.tampering.detector import PageReport, RiskLabel
+
+_RISK_RANK = {
+    RiskLabel.LIKELY_MANIPULATED: 2,
+    RiskLabel.SUSPICIOUS: 1,
+    RiskLabel.LEGITIMATE: 0,
+}
 
 PIPELINE_VERSION = "0.1.0"
 
@@ -89,22 +95,24 @@ def _build_tampering(reports: List[PageReport]) -> TamperingModuleSchema:
     pages = [
         TamperingPageSchema(
             source=r.source,
-            verdict=_str(r.verdict),
-            verdict_score=r.verdict_score,
-            confidence=_str(r.confidence),
-            reasons=list(r.verdict_reasons),
+            risk_label=r.risk_label.value,
+            fraud_score=r.fraud_score,
+            reliability=r.reliability.value,
+            reasons=[f"[{f.severity.value}] {f.message}" for f in r.findings],
             face_detected=bool(r.face.detected) if r.face else False,
             doctamper_score=r.doctamper.score_mean if r.doctamper and r.doctamper.ran else None,
-            mvssnet_score=r.mvssnet.score if r.mvssnet and r.mvssnet.ran else None,
+            trufor_score=r.trufor.score if r.trufor and r.trufor.ran else None,
+            face_trufor_score=r.face_trufor.score if r.face_trufor and r.face_trufor.ran else None,
         )
         for r in reports
     ]
-    rank = {"HARD_REJECT": 2, "REVIEW": 1, "ACCEPT": 0}
-    worst = max(reports, key=lambda r: rank.get(_str(r.verdict), 0), default=None)
-    worst_verdict = _str(worst.verdict) if worst is not None else "ACCEPT"
-    worst_score = max((r.verdict_score for r in reports), default=0.0)
+    worst = max(reports, key=lambda r: _RISK_RANK.get(r.risk_label, 0), default=None)
+    worst_risk_label = worst.risk_label.value if worst is not None else RiskLabel.LEGITIMATE.value
+    worst_fraud_score = max((r.fraud_score for r in reports), default=0.0)
     return TamperingModuleSchema(
-        pages=pages, worst_verdict=worst_verdict, worst_score=worst_score,
+        pages=pages,
+        worst_risk_label=worst_risk_label,
+        worst_fraud_score=worst_fraud_score,
     )
 
 
@@ -138,10 +146,3 @@ def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
             confidence_avg=result.get("confidence_avg", 0.0),
         ))
     return OCRModuleSchema(engine=engine_name, pages=pages)
-
-
-def _str(value) -> str:
-    """Coerce Enum or str to its string representation."""
-    if hasattr(value, "value"):
-        return str(value.value)
-    return str(value)
