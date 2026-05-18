@@ -1,17 +1,29 @@
 import json
 import re
+from pathlib import Path
 
 from service.ocr.agent.base import LLMBackend
 from service.ocr.models import Config, MRZResult, PipelineOutput, TextLine
 from service.ocr.normalizer import normalize_fields
 
 
-def _load_fields(path: str) -> dict:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+def _load_template(templates_dir: str, document_type: str) -> dict | None:
+    path = Path(templates_dir) / f"{document_type}.json"
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _build_fields_guide(template: dict) -> str:
+    fields = template.get("fields", [])
+    lines = []
+    for f in fields:
+        key       = f.get("key", "")
+        label     = f.get("label", "")
+        type_hint = f.get("type", "")
+        lines.append(f"- {key}: look for label '{label}' (value type: {type_hint})")
+    return "\n".join(lines)
 
 
 def _mrz_to_dict(mrz: MRZResult) -> dict:
@@ -25,10 +37,6 @@ def _mrz_to_dict(mrz: MRZResult) -> dict:
         "sex"             : mrz.sex
     }
     return normalize_fields({k: v for k, v in raw.items() if v})
-
-
-def _get_missing_fields(all_fields: list, resolved: dict) -> list:
-    return [f for f in all_fields if f not in resolved]
 
 
 def _get_image_dimensions(lines: list[TextLine]) -> tuple[float, float]:
@@ -69,23 +77,11 @@ def _build_spatial_layout(lines: list[TextLine]) -> str:
     )
 
 
-def _build_label_hints_section(label_hints: dict, missing_fields: list) -> str:
-    if not label_hints:
-        return ""
-    relevant = {k: v for k, v in label_hints.items() if k in missing_fields}
-    if not relevant:
-        return ""
-    lines = ["## Label hints for field extraction"]
-    lines.append("Each field may appear under one of these labels in the document:")
-    for field, hints in relevant.items():
-        lines.append(f"  {field}: look for labels like {', '.join(hints)}")
-    return "\n".join(lines)
-
-
 def _build_prompt(output: PipelineOutput,
                   mrz_fields: dict,
-                  mrz_valid: bool | None) -> str:
-    spatial_layout = _build_spatial_layout(output.english_lines)
+                  mrz_valid: bool | None,
+                  template: dict) -> str:
+    spatial_layout = _build_spatial_layout(output.lines)
 
     mrz_section = ""
     if mrz_fields:
@@ -97,6 +93,17 @@ Do NOT copy them as extracted values. Extract every field independently from the
 {json.dumps(mrz_fields, ensure_ascii=False, indent=2)}
 """
 
+    fields_guide = _build_fields_guide(template)
+    step2 = f"""## Step 2 — Extract fields using the template guide below
+For each field listed in the guide, find its value in the layout following the spatial rules above.
+- The KEY is EXACTLY the key listed in the guide — do not invent, rename, translate, or merge keys.
+- The VALUE is the verbatim text of the value line, or null if not found.
+- Emit one entry per guide field; use null when the value is not present in the layout.
+- Do NOT add fields that are not in the guide.
+
+### Fields to extract
+{fields_guide}"""
+
     return f"""You are a strict document validation agent for official identity documents.
 
 ## Document layout
@@ -107,6 +114,7 @@ Each line has normalized spatial coordinates [y=row x=column] (0.0 to 1.0). Line
   2. The IMMEDIATE NEXT row below (the row with the smallest y strictly greater than the label's y, within +0.015 to +0.05, similar x ±0.15).
 - **Stop at the first immediate line.** Do NOT keep walking down rows. If the immediate next row does not contain the value, the value is null.
 - Take ONE single line as the value. Extract VERBATIM (preserve casing, accents, punctuation, non-ASCII). Never combine multiple lines.
+- **DO NOT replace spaces with underscores in values.** A value like "John Doe" stays as `"John Doe"`, never `"John_Doe"`. Underscores are only used in KEYS, never in VALUES.
 - **The value is ONLY the data — it must NOT include the label text.** If a row contains both the label and the value (e.g. the row is "Passport No. G12345678"), the value is `"G12345678"`, NOT `"Passport No. G12345678"`. If a row reads "Date of Expiry: 08/03/2027", the value is `"08/03/2027"`, NOT the whole string.
 - **Each line is consumed once.** If a line is the value of label A, it cannot also be the value of label B.
 - **A line that is the translation of a label is NOT a value.** Lines that start with "/" (e.g. "/Surname and Given Name") or that consist of purely descriptive words translating the previous label belong to the LABEL group, not the value. Skip them as candidate values.
@@ -118,36 +126,7 @@ Each line has normalized spatial coordinates [y=row x=column] (0.0 to 1.0). Line
 ## Step 1 — Document type
 Infer the document type from the layout content. Use a short snake_case identifier. If you cannot determine it, use "unknown".
 
-## Step 2 — Extract fields
-**BE EXHAUSTIVE.** Work in two explicit passes before producing the JSON:
-
-**Pass 1 — enumerate every candidate label.** Sweep the layout top-to-bottom, left-to-right. List EVERY line that could be a label, including:
-- Short labels (e.g. "No.", "Type", "Sex", "M/F", "DOB")
-- Labels in corners, margins, headers, footers, and side columns
-- Labels stacked above each other in dense form blocks
-- Labels separated by "/" or in bilingual form (count as one label per concept)
-- Labels that may not have an obvious value next to them (still include them)
-
-Do not stop after the "obvious" labels. The goal is to enumerate them ALL before pairing.
-
-**Pass 2 — pair each label with its value** using the spatial rules above. If the immediate adjacent position has no concrete data, the value is `null` — but the label still gets an entry.
-
-After pass 2, mentally count: the number of entries in `fields` should equal the number of labels you enumerated in Pass 1. If it is fewer, you skipped some — go back and add them with `null` where needed.
-
-Do NOT invent fields that have no visible label in the layout. Do NOT use field names from the MRZ reference unless the SAME label words appear in the layout. Better to emit a key with `null` than to skip a visible label, but NEVER add a key whose label is not in the layout.
-
-- Each OCR line is either a label OR a value, never both.
-- Each KEY: snake_case identifier derived from the label text (ASCII only in the key). **Replace EVERY space between words with an underscore** — words must never be glued together. Strip parenthetical hints and punctuation. Lowercase everything. For bilingual labels on the same row or "/-separated" (e.g. "Tipo / Type", "Lugar de Nacimiento / Place of Birth"), use only the English/Latin portion.
-  Examples (note the underscores):
-    "Date of Expiry (DD/MM/YYYY)"          → "date_of_expiry"
-    "Passport No."                         → "passport_no"
-    "Tipo / Type"                          → "type"
-    "Surname and Given Name"               → "surname_and_given_name"   (NOT "sumameandgivenname")
-    "उपमा और नाम /Surname and Given Name" → "surname_and_given_name"
-    "Place of Birth"                       → "place_of_birth"           (NOT "placeofbirth")
-- Each VALUE: verbatim text of the value line. Use null if no value was found in the adjacent positions.
-- Do NOT emit duplicate keys for the same concept written in different languages.
-- NEVER prefix any key with `mrz_`. MRZ is for Step 3 validation only.
+{step2}
 
 ## Step 3 — Detect inconsistencies
 An inconsistency is ONLY:
@@ -226,13 +205,14 @@ Return ONLY raw JSON, no explanation, no markdown:
 
 def analyze(output: PipelineOutput,
             config: Config,
-            backend: LLMBackend) -> dict:
+            backend: LLMBackend,
+            template: dict) -> dict:
 
     mrz        = output.mrz
     mrz_fields = _mrz_to_dict(mrz) if mrz else {}
     mrz_valid  = mrz.valid if mrz else None
 
-    prompt = _build_prompt(output, mrz_fields, mrz_valid)
+    prompt = _build_prompt(output, mrz_fields, mrz_valid, template)
 
     raw = backend.complete(prompt)
 

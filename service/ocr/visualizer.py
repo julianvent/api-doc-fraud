@@ -54,7 +54,7 @@ def visualize_cv2(image_bgr: np.ndarray,
     color_english = (34, 197, 94)
     color_mrz     = (59, 130, 246)
 
-    for line in output.english_lines:
+    for line in output.lines:
         if line.bbox is None or len(line.bbox) == 0:
             continue
         pixel_bbox = _to_pixels(line.bbox, w, h)
@@ -81,7 +81,7 @@ def visualize_matplotlib(image_bgr: np.ndarray,
 
     h, w = image_bgr.shape[:2]
 
-    for line in output.english_lines:
+    for line in output.lines:
         if line.bbox is None or len(line.bbox) == 0:
             continue
 
@@ -334,7 +334,7 @@ def print_report(output: PipelineOutput, agent_result: dict):
     print("PIPELINE REPORT")
     print("=" * 60)
     print(f"Confidence avg : {output.confidence_avg:.2f}")
-    print(f"English lines  : {len(output.english_lines)}")
+    print(f"English lines  : {len(output.lines)}")
     print(f"Source         : {output.source}")
 
     if output.mrz:
