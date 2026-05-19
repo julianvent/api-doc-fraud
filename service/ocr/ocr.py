@@ -3,7 +3,6 @@ from pathlib import Path
 
 import cv2
 
-from service.ocr.agent import fill_missing_fields
 from service.ocr.agent.agent import _load_template, _build_spatial_layout
 from service.ocr.agent.base import LLMBackend
 from service.ocr.agent.ollama import OllamaBackend
@@ -103,24 +102,35 @@ def _run(image_path: str | Path,
          document_type: str | None = None) -> dict:
 
     image_path = Path(image_path)
-    image      = load_image(image_path)
-    engine     = _get_engine(config)
+    print(f"\n[OCR] === processing {image_path.name} ===")
+
+    image  = load_image(image_path)
+    engine = _get_engine(config)
+    print(f"[OCR] image loaded, engine={config.ocr_engine}")
 
     if document_type:
+        print(f"[OCR] document_type='{document_type}' provided by caller — skipping VLM identify")
         lines = engine.extract(image)
     else:
+        print(f"[OCR] no document_type provided — running VLM identify and OCR in parallel")
         with ThreadPoolExecutor(max_workers=2) as ex:
             id_future  = ex.submit(identify, str(image_path), vision_backend)
             ocr_future = ex.submit(engine.extract, image)
             document_type = id_future.result()
             lines         = ocr_future.result()
+        print(f"[OCR] VLM identified document_type='{document_type}'")
+
+    print(f"[OCR] OCR extracted {len(lines)} lines")
 
     if not lines:
+        print(f"[OCR] no text extracted — aborting")
         return {"error": "no text extracted", "source": None, "document_type": document_type}
 
     confidence_avg = _avg_confidence(lines)
+    print(f"[OCR] avg OCR confidence: {confidence_avg:.3f}")
 
     if confidence_avg < config.confidence_threshold:
+        print(f"[OCR] confidence below threshold ({config.confidence_threshold}) — aborting")
         return {
             "error"         : "low confidence — document quality insufficient",
             "confidence_avg": round(confidence_avg, 4),
@@ -130,30 +140,40 @@ def _run(image_path: str | Path,
 
     english_text = "\n".join(l.text for l in lines)
     mrz          = detect(lines)
+    if mrz:
+        print(f"[OCR] MRZ detected: valid={mrz.valid}")
+    else:
+        print(f"[OCR] no MRZ detected")
 
     output = _build_pipeline_output(
         document_type, lines, english_text, mrz, lines, confidence_avg
     )
 
     _save_visualization(image, output, image_path, config)
+    print(f"[OCR] base visualization saved → {image_path.stem}_result.png")
 
     template      = _load_template(config.templates_dir, document_type)
     template_path = Path(config.templates_dir) / f"{document_type}.json"
 
     if template is not None:
-        print(f"[OCR] document_type='{document_type}' → template FOUND at {template_path} → VLM guided by template")
+        n_fields = len(template.get("fields", []))
+        print(f"[OCR] template FOUND at {template_path} ({n_fields} fields) → VLM guided by template")
     else:
-        print(f"[OCR] document_type='{document_type}' → no template at {template_path} → VLM free extraction")
+        print(f"[OCR] no template at {template_path} → VLM free extraction")
 
     spatial_layout = _build_spatial_layout(lines)
     result = extract_with_vision(str(image_path), vision_backend, output, spatial_layout, template)
 
     agent_fields = result.get("result", {}).get("fields", {})
+    print(f"[OCR] final extracted fields: {len(agent_fields)} → {list(agent_fields.keys())}")
+
     if agent_fields:
         image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         agent_vis_path = Path(config.ocr_output_dir) / f"{image_path.stem}_agent.png"
         visualize_agent_extraction(image_bgr, lines, agent_fields, str(agent_vis_path))
+        print(f"[OCR] agent visualization saved → {agent_vis_path.name}")
 
+    print(f"[OCR] === done ===\n")
     return result
 
 

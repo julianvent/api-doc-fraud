@@ -20,6 +20,7 @@ DATE_FORMATS = [
     "%B %d %Y",     # January 01 1990
     "%b %d, %Y",    # JAN 01, 1990
     "%B %d, %Y",    # January 01, 1990
+    "%d %m %Y",
 ]
 
 DATE_FIELDS = {
