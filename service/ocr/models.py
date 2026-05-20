@@ -16,9 +16,7 @@ class Config:
     ollama_vision_model  : str   = field(
         default_factory=lambda: os.getenv("OLLAMA_VISION_MODEL", "qwen2.5vl:7b")
     )
-    document_fields_path : str   = str(_BASE / "data" / "document_fields.json")
     templates_dir        : str   = str(_BASE / "templates")
-    ocr_output_dir       : str   = "service/ocr/output"
 
     # Change between engines
     #   OCR_ENGINE=paddle  uvicorn main:app --reload  ← default
@@ -67,10 +65,8 @@ class PipelineOutput:
     mrz_verified   : Optional[MRZResult]
     mrz_unverified : Optional[MRZResult]
     lines          : list[TextLine]
-    english_text   : str
     source         : str
     confidence_avg : float
-    raw_lines      : list[TextLine]
 
     @property
     def mrz(self) -> Optional[MRZResult]:

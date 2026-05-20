@@ -1,10 +1,10 @@
 import json
 import re
 
-from .agent.agent import _build_fields_guide, _iter_template_fields
 from .backends import VisionBackend
 from .models import PipelineOutput
 from .normalizer import normalize_fields
+from .templates import build_fields_guide, iter_template_fields
 
 
 _VLM_EXTRACT_PROMPT = """You are extracting structured data from an identity document image.
@@ -129,6 +129,15 @@ def _norm(value) -> str:
     return str(value).strip().upper().replace(" ", "") if value else ""
 
 
+_CONFIDENCE_SCORE = {"high": 0.9, "medium": 0.6, "low": 0.3}
+
+
+def _confidence_to_score(confidence) -> float:
+    if not confidence:
+        return 0.0
+    return _CONFIDENCE_SCORE.get(str(confidence).strip().lower(), 0.0)
+
+
 def _compare_fields_vs_mrz(fields: dict, output: PipelineOutput) -> tuple[list[dict], list[str]]:
     inconsistencies: list[dict] = []
     flags          : list[str]  = []
@@ -185,7 +194,7 @@ def extract_with_vision(image_path: str,
     prompt = _VLM_EXTRACT_PROMPT
 
     if template is not None:
-        fields_guide = _build_fields_guide(template)
+        fields_guide = build_fields_guide(template)
         prompt = f"""{prompt}
 
 ## Required fields (PASS 1 — use EXACTLY these keys)
@@ -233,7 +242,7 @@ The OCR engine extracted this layout from the same image. Use the image as the p
     extras: dict = {}
 
     if template is not None:
-        template_keys = [f.get("key") for f in _iter_template_fields(template) if f.get("key")]
+        template_keys = [f.get("key") for f in iter_template_fields(template) if f.get("key")]
         extras        = {k: v for k, v in agent_fields.items() if k not in template_keys and v}
         agent_fields  = {k: v for k, v in agent_fields.items() if k in template_keys}
         missing       = [k for k in template_keys if not agent_fields.get(k)]
@@ -256,6 +265,7 @@ The OCR engine extracted this layout from the same image. Use the image as the p
         print(f"[OCR] inconsistencies: {len(inconsistencies)}")
 
     verdict = "suspicious" if inconsistencies else "genuine"
+    confidence_score = _confidence_to_score(parsed.get("confidence"))
 
     return {
         "agent_fields": {
@@ -287,6 +297,6 @@ The OCR engine extracted this layout from the same image. Use the image as the p
             "verdict"        : verdict,
             "confidence"     : parsed.get("confidence"),
             "source"         : output.source,
-            "confidence_avg" : output.confidence_avg
+            "confidence_avg" : confidence_score
         }
     }
