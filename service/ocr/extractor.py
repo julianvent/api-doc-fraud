@@ -36,6 +36,44 @@ Look at the document and identify every visible label-value pair.
   → key: "date_of_birth" (underscores OK in key)
   → value: "08 March 1995" (spaces preserved, NO underscores)
 
+## Multi-word names (CRITICAL — applies to surname, given_names, apellidos, nombres, etc.)
+Many naming conventions use multiple words or even multiple lines for names. You MUST capture the FULL name, not just the first word or first line.
+
+### Surname / Apellidos — TWO surnames is the NORM in many cultures
+- **Hispanic / Portuguese / Brazilian**: people have TWO surnames (paternal + maternal). It is NORMAL and EXPECTED to see two surnames under one label.
+- **Even if the label is singular ("Surname", "Apellido", "Nom")**, the VALUE on the document very often contains TWO surnames.
+- Example layout 1 — both surnames on the same line:
+  ```
+  Surname: GARCIA LOPEZ
+  ```
+  → value = "GARCIA LOPEZ" (BOTH words, not just "GARCIA")
+- Example layout 2 — both surnames on adjacent lines under the same label:
+  ```
+  Apellidos
+  GARCIA
+  LOPEZ
+  ```
+  → value = "GARCIA LOPEZ" (JOIN both lines with a single space, as a SINGLE value)
+- Example layout 3 — two-column form with both surnames stacked under one column header:
+  ```
+  Apellidos       Nombres
+  GARCIA          JUAN
+  LOPEZ           CARLOS
+  ```
+  → surname = "GARCIA LOPEZ", given_names = "JUAN CARLOS"
+
+**For surname / apellidos specifically: if you see TWO words or lines that look like surnames under the same label, ALWAYS include both as one value.** Never return just one.
+
+### Given names / Nombres — also often multiple
+- Compound given names are common: "JUAN CARLOS", "MARIA DEL CARMEN", "ANA SOFIA".
+- Multiple given names may span lines too — join them with single spaces into one value.
+
+### Universal rules for name fields
+- Capture EVERY word that belongs to the name, joined by single spaces in their original order.
+- DO NOT truncate to one word.
+- DO NOT split a multi-word name across multiple keys.
+- For names, joining multiple lines INTO one value is the CORRECT behavior (overrides the "never combine lines" rule which applies to non-name fields like document_number, dates, etc.).
+
 ## Prominent standalone data (conservative capture)
 Some documents have prominent data without an explicit label (e.g. a visa number "VJ9188237" printed at the top corner of a visa, an ID at the top of a passport). You MAY emit such data when ALL of these are true:
 - It is visually structured (alphanumeric code, ID format, formatted number).
@@ -80,8 +118,8 @@ def _mrz_to_dict(mrz) -> dict:
         "surname"        : mrz.surname,
         "given_names"    : mrz.given_names,
         "country"        : mrz.country,
-        "date_of_birth"  : mrz.birth_date,
-        "date_of_expiry" : mrz.expiry_date,
+        "birth_date"  : mrz.birth_date,
+        "expiry_date" : mrz.expiry_date,
         "document_number": mrz.number,
         "sex"            : mrz.sex,
     })
