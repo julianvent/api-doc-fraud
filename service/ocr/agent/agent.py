@@ -1,17 +1,63 @@
 import json
 import re
+from pathlib import Path
 
 from service.ocr.agent.base import LLMBackend
 from service.ocr.models import Config, MRZResult, PipelineOutput, TextLine
 from service.ocr.normalizer import normalize_fields
 
 
-def _load_fields(path: str) -> dict:
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+def _load_template(templates_dir: str, document_type: str) -> dict | None:
+    path = Path(templates_dir) / f"{document_type}.json"
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _iter_template_fields(template: dict) -> list[dict]:
+    fields = template.get("fields", [])
+    if isinstance(fields, list):
+        return [f for f in fields if isinstance(f, dict)]
+    if isinstance(fields, dict):
+        out = []
+        for group in fields.values():
+            if isinstance(group, list):
+                out.extend(f for f in group if isinstance(f, dict))
+        return out
+    return []
+
+
+def _build_fields_guide(template: dict) -> str:
+    fields = template.get("fields", [])
+    if isinstance(fields, dict):
+        sections = []
+        for category, group in fields.items():
+            if not isinstance(group, list) or not group:
+                continue
+            lines = [f"### {category}"]
+            for f in group:
+                if not isinstance(f, dict):
+                    continue
+                key       = f.get("key", "")
+                label     = f.get("label", "")
+                type_hint = f.get("type", "")
+                lines.append(f"- {key}: look for label '{label}' (value type: {type_hint})")
+            sections.append("\n".join(lines))
+        return "\n\n".join(sections)
+
+    if isinstance(fields, list):
+        lines = []
+        for f in fields:
+            if not isinstance(f, dict):
+                continue
+            key       = f.get("key", "")
+            label     = f.get("label", "")
+            type_hint = f.get("type", "")
+            lines.append(f"- {key}: look for label '{label}' (value type: {type_hint})")
+        return "\n".join(lines)
+
+    return ""
 
 
 def _mrz_to_dict(mrz: MRZResult) -> dict:
@@ -25,10 +71,6 @@ def _mrz_to_dict(mrz: MRZResult) -> dict:
         "sex"             : mrz.sex
     }
     return normalize_fields({k: v for k, v in raw.items() if v})
-
-
-def _get_missing_fields(all_fields: list, resolved: dict) -> list:
-    return [f for f in all_fields if f not in resolved]
 
 
 def _get_image_dimensions(lines: list[TextLine]) -> tuple[float, float]:
@@ -69,104 +111,81 @@ def _build_spatial_layout(lines: list[TextLine]) -> str:
     )
 
 
-def _build_label_hints_section(label_hints: dict, missing_fields: list) -> str:
-    if not label_hints:
-        return ""
-    relevant = {k: v for k, v in label_hints.items() if k in missing_fields}
-    if not relevant:
-        return ""
-    lines = ["## Label hints for field extraction"]
-    lines.append("Each field may appear under one of these labels in the document:")
-    for field, hints in relevant.items():
-        lines.append(f"  {field}: look for labels like {', '.join(hints)}")
-    return "\n".join(lines)
-
-
 def _build_prompt(output: PipelineOutput,
-                  fields_map: dict,
-                  missing_fields: list,
                   mrz_fields: dict,
                   mrz_valid: bool | None,
-                  label_hints: dict) -> str:    # en lugar de pasar el JSON completo con indent=2
-    schemas_json = json.dumps(
-        {k: v["fields"] if isinstance(v, dict) else v for k, v in fields_map.items()},
-        ensure_ascii=False,
-        separators=(',', ':')  # sin espacios — menos tokens
-    )
-    missing_str    = json.dumps(missing_fields, ensure_ascii=False)
-    spatial_layout = _build_spatial_layout(output.english_lines)
-    hints_section  = _build_label_hints_section(label_hints, missing_fields)
+                  template: dict) -> str:
+    spatial_layout = _build_spatial_layout(output.lines)
 
     mrz_section = ""
     if mrz_fields:
-        mrz_status = "VERIFIED (checksum passed)" if mrz_valid else "UNVERIFIED (checksum failed — possible tampering)"
+        mrz_status  = "VERIFIED (checksum passed)" if mrz_valid else "UNVERIFIED (checksum failed — possible tampering)"
         mrz_section = f"""
-## MRZ extracted fields — {mrz_status}
-These fields were extracted from the Machine Readable Zone and must NOT be re-extracted.
-{"Use them as ground truth for cross-validation." if mrz_valid else "Treat with caution — checksum failure may indicate document tampering."}
+## MRZ reference — {mrz_status}
+These values are provided ONLY for inconsistency detection in Step 3.
+Do NOT copy them as extracted values. Extract every field independently from the layout.
 {json.dumps(mrz_fields, ensure_ascii=False, indent=2)}
 """
 
-    return f"""You are a strict document validation agent specialized in official identity documents.
+    fields_guide = _build_fields_guide(template)
+    step2 = f"""## Step 2 — Extract fields using the template guide below
+For each field listed in the guide, find its value in the layout following the spatial rules above.
+- The KEY is EXACTLY the key listed in the guide — do not invent, rename, translate, or merge keys.
+- The VALUE is the verbatim text of the value line, or null if not found.
+- Emit one entry per guide field; use null when the value is not present in the layout.
+- Do NOT add fields that are not in the guide.
 
-## Critical extraction rules
-- A field value is ONLY the text immediately to the right of its label (same y) OR the single line directly below it (next y, similar x).
-- NEVER concatenate multiple lines into a single field value.
-- NEVER include another field's label or value inside a field value.
-- If a value seems too long (more than 5 words for names, more than 12 chars for dates/numbers), it is likely wrong — re-check the coordinates.
-- Extract values exactly as they appear — do not interpret, translate, or reformat.
-- A field value must come from a SINGLE line in the layout, not multiple lines combined.
+### Fields to extract
+{fields_guide}"""
+
+    return f"""You are a strict document validation agent for official identity documents.
 
 ## Document layout
-Each line has normalized spatial coordinates [y=row x=column] (0.0 to 1.0).
-Lines with similar y values are on the same row.
-A label and its value are typically on the same row (same y, different x) or the value is on the next row directly below the label (slightly higher y, similar x).
+Each line has normalized spatial coordinates [y=row x=column] (0.0 to 1.0). Lines with similar y (≤ 0.02 apart) are on the same row.
+- A LABEL is descriptive text that names a field. A VALUE is concrete data (name, date, number, code).
+- The value of a label is the FIRST line of data immediately adjacent to it, in ONE of these positions:
+  1. Same row, to the IMMEDIATE RIGHT of the label (the nearest higher-x line, same y ±0.025).
+  2. The IMMEDIATE NEXT row below (the row with the smallest y strictly greater than the label's y, within +0.015 to +0.05, similar x ±0.15).
+- **Stop at the first immediate line.** Do NOT keep walking down rows. If the immediate next row does not contain the value, the value is null.
+- Take ONE single line as the value. Extract VERBATIM (preserve casing, accents, punctuation, non-ASCII). Never combine multiple lines.
+- **DO NOT replace spaces with underscores in values.** A value like "John Doe" stays as `"John Doe"`, never `"John_Doe"`. Underscores are only used in KEYS, never in VALUES.
+- **The value is ONLY the data — it must NOT include the label text.** If a row contains both the label and the value (e.g. the row is "Passport No. G12345678"), the value is `"G12345678"`, NOT `"Passport No. G12345678"`. If a row reads "Date of Expiry: 08/03/2027", the value is `"08/03/2027"`, NOT the whole string.
+- **Each line is consumed once.** If a line is the value of label A, it cannot also be the value of label B.
+- **A line that is the translation of a label is NOT a value.** Lines that start with "/" (e.g. "/Surname and Given Name") or that consist of purely descriptive words translating the previous label belong to the LABEL group, not the value. Skip them as candidate values.
+- **Be skeptical of OCR fragments.** If the candidate value looks like OCR noise (very short truncated token, partial word, isolated punctuation, or anything that doesn't read as concrete data), prefer `null` over guessing. Do not extract values like "VSA" if it's clearly a fragment of "VISA".
+- If no concrete data is in the immediate adjacent position, the value is null. Never substitute with another label or a far-away line.
 
 {spatial_layout}
 {mrz_section}
-{hints_section}
+## Step 1 — Document type
+Infer the document type from the layout content. Use a short snake_case identifier. If you cannot determine it, use "unknown".
 
-## Step 1 — Identify document type
-Determine the document type from the layout.
-Available document types and their exact field names:
-{schemas_json}
-
-If the document type is not listed, use "default".
-
-## Step 2 — Extract ONLY these missing fields
-{missing_str}
-
-For each missing field:
-1. Find the label text in the layout using the label hints above
-2. The value is on the SAME ROW (same y ±0.02) to the right, OR the NEXT ROW (y +0.02 to +0.06) at a similar x position
-3. Take ONLY that single line as the value — never combine multiple lines
-4. If the label is not found, set the value to null
-5. Use exact field names from the schema only
+{step2}
 
 ## Step 3 — Detect inconsistencies
 An inconsistency is ONLY:
 - date_of_issue is after date_of_expiry
-- A visual field value directly contradicts the same MRZ field
-- MRZ checksum failed (flagged above if applicable)
+- A visually extracted field directly contradicts the same MRZ field
+- MRZ checksum failed
 
 Not inconsistencies:
 - Future dates (normal for date_of_expiry)
-- Missing fields
-- Anything not directly verifiable from the document
+- Missing or null fields
+- Anything not directly verifiable from the layout
 
 ## Step 4 — Verdict
-genuine   → all fields consistent, MRZ valid or absent
+genuine    → all fields consistent, MRZ valid or absent
 suspicious → at least one confirmed inconsistency or MRZ checksum failed
 
 Return ONLY raw JSON, no explanation, no markdown, no preamble:
 {{
-    "document_type": "<type matching schema key>",
+    "document_type": "<snake_case type>",
     "fields": {{
-        "<exact_field_name>": "<single line value as found or null>"
+        "<snake_case_key>": "<verbatim value or null>"
     }},
     "inconsistencies": [
         {{
-            "field"      : "<field name>",
+            "field"      : "<field key>",
             "description": "<exact contradiction between two specific values>"
         }}
     ],
@@ -181,34 +200,54 @@ def _parse_response(raw: str) -> dict:
     return json.loads(clean)
 
 
+def fill_missing_fields(lines: list[TextLine],
+                         backend: LLMBackend,
+                         field_keys: list[str]) -> dict[str, str | None]:
+    if not field_keys or not lines:
+        return {}
+
+    spatial = _build_spatial_layout(lines)
+    keys_json = json.dumps(field_keys, ensure_ascii=False)
+
+    prompt = f"""You are extracting specific fields from an identity document.
+
+## Document layout (normalized coordinates)
+{spatial}
+
+## Fields to extract
+{keys_json}
+
+## Instructions
+- Interpret each field key as a hint of what to look for (e.g. "passport_no" = passport number).
+- A value is the text adjacent (same row to the right, or next row directly below) to a label that semantically matches the key.
+- Take ONLY a single line as the value.
+- If a field cannot be found, set its value to null.
+- Do NOT include the label text in the value.
+
+Return ONLY raw JSON, no explanation, no markdown:
+{{
+    "<field_key>": "<value or null>"
+}}"""
+
+    try:
+        raw = backend.complete(prompt)
+        parsed = _parse_response(raw)
+        return {k: parsed.get(k) for k in field_keys}
+    except Exception:
+        return {}
+
+
 def analyze(output: PipelineOutput,
             config: Config,
-            backend: LLMBackend) -> dict:
-    fields_map = _load_fields(config.document_fields_path)
+            backend: LLMBackend,
+            template: dict) -> dict:
 
     mrz        = output.mrz
     mrz_fields = _mrz_to_dict(mrz) if mrz else {}
     mrz_valid  = mrz.valid if mrz else None
 
-    # support both old format (list) and new format (dict with fields/label_hints)
-    def get_fields(entry):
-        if isinstance(entry, dict):
-            return entry.get("fields", [])
-        return entry
+    prompt = _build_prompt(output, mrz_fields, mrz_valid, template)
 
-    def get_hints(entry):
-        if isinstance(entry, dict):
-            return entry.get("label_hints", {})
-        return {}
-
-    all_fields     = get_fields(fields_map.get("default", []))
-    missing_fields = _get_missing_fields(all_fields, mrz_fields)
-    label_hints    = get_hints(fields_map.get("default", {}))
-
-    prompt = _build_prompt(
-        output, fields_map, missing_fields,
-        mrz_fields, mrz_valid, label_hints
-    )
     raw = backend.complete(prompt)
 
     try:
@@ -216,38 +255,36 @@ def analyze(output: PipelineOutput,
     except Exception:
         agent_result = {"error": "agent response could not be parsed", "raw": raw}
 
-    doc_type    = agent_result.get("document_type", "default")
-    doc_entry   = fields_map.get(doc_type, fields_map.get("default", []))
-    all_fields  = get_fields(doc_entry)
-    label_hints = get_hints(doc_entry)
+    doc_type        = agent_result.get("document_type", "unknown")
+    raw_fields      = agent_result.get("fields", {}) or {}
+    agent_fields    = normalize_fields({
+        k: v for k, v in raw_fields.items()
+        if isinstance(k, str) and not k.lower().startswith("mrz_")
+    })
+    inconsistencies = list(agent_result.get("inconsistencies", []) or [])
 
-    missing_fields = _get_missing_fields(all_fields, mrz_fields)
-    agent_fields   = normalize_fields(agent_result.get("fields", {}))
-    merged_fields  = {**agent_fields, **mrz_fields}
-
-    mrz_output = None
-    if output.mrz_verified:
-        mrz_output = {
-            "valid" : True,
-            "source": "mrz_verified",
-            "fields": mrz_fields
-        }
-    elif output.mrz_unverified:
-        mrz_output = {
-            "valid"  : False,
-            "source" : "mrz_unverified",
-            "fields" : mrz_fields,
-            "warning": "MRZ checksum failed — fields may be unreliable"
-        }
+    flags: list[str] = []
+    if output.mrz_unverified:
+        flags.append("mrz_checksum_failed")
+        inconsistencies.append({
+            "field"      : "mrz",
+            "description": "MRZ checksum failed — possible tampering",
+        })
+    if inconsistencies and "mrz_mismatch" not in flags:
+        if any(
+            (str(inc.get("field", "")).lower() == "mrz"
+             or "mrz" in str(inc.get("description", "")).lower())
+            for inc in inconsistencies
+        ):
+            if "mrz_checksum_failed" not in flags:
+                flags.append("mrz_mismatch")
 
     return {
-        "mrz_fields": mrz_output,
-
         "agent_fields": {
             "source"         : backend.__class__.__name__,
             "document_type"  : doc_type,
             "fields"         : agent_fields,
-            "inconsistencies": agent_result.get("inconsistencies", []),
+            "inconsistencies": inconsistencies,
             "confidence"     : agent_result.get("confidence"),
             "verdict"        : agent_result.get("verdict"),
             "notes"          : agent_result.get("notes")
@@ -255,11 +292,11 @@ def analyze(output: PipelineOutput,
 
         "result": {
             "document_type"  : doc_type,
-            "fields"         : merged_fields,
-            "inconsistencies": agent_result.get("inconsistencies", []),
+            "fields"         : agent_fields,
+            "inconsistencies": inconsistencies,
+            "flags"          : flags,
             "verdict"        : agent_result.get("verdict"),
             "confidence"     : agent_result.get("confidence"),
-            "mrz_valid"      : mrz_valid,
             "source"         : output.source,
             "confidence_avg" : output.confidence_avg
         }

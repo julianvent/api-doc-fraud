@@ -127,15 +127,32 @@ def _build_preprocessor(pages: List[ProcessedPage]) -> PreprocessorModuleSchema:
 def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
     pages = []
     for i, r in enumerate(results):
-        result = r.get("result", {}) if isinstance(r, dict) else {}
-        fields = result.get("fields", {})
+        if not isinstance(r, dict):
+            pages.append(OCRPageSchema(page_number=i + 1))
+            continue
+
+        nested = r.get("result", {}) if isinstance(r.get("result"), dict) else {}
+
+        document_type  = r.get("document_type")  or nested.get("document_type")
+        verdict        = r.get("verdict")        or nested.get("verdict")
+        confidence_avg = r.get("confidence_avg") or nested.get("confidence_avg", 0.0)
+        fields         = r.get("fields")         or nested.get("fields")
+        extras         = r.get("extras")         or nested.get("extras")
+        match_score    = r.get("match_score")
+        flags          = r.get("flags")
+
         if fields:
             print(f"[OCR page {i + 1}] fields:\n{json.dumps(fields, indent=2, ensure_ascii=False)}")
+
         pages.append(OCRPageSchema(
-            page_number=i + 1,
-            document_type=result.get("document_type"),
-            verdict=result.get("verdict"),
-            confidence_avg=result.get("confidence_avg", 0.0),
+            page_number    = i + 1,
+            document_type  = document_type,
+            verdict        = verdict,
+            confidence_avg = confidence_avg,
+            fields         = fields,
+            extras         = extras,
+            match_score    = match_score,
+            flags          = flags,
         ))
     return OCRModuleSchema(engine=engine_name, pages=pages)
 

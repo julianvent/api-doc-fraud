@@ -11,9 +11,14 @@ _BASE = Path(__file__).parent
 class Config:
     confidence_threshold : float = 0.60
     ollama_url           : str   = "http://localhost:11434/api/generate"
-    ollama_model         : str   = "gemma3:4b"
+    ollama_model         : str   = "qwen2.5:7b"
+    ollama_vision_url    : str   = "http://localhost:11434/api/generate"
+    ollama_vision_model  : str   = field(
+        default_factory=lambda: os.getenv("OLLAMA_VISION_MODEL", "qwen2.5vl:7b")
+    )
     document_fields_path : str   = str(_BASE / "data" / "document_fields.json")
-    ocr_output_dir       : str   = "service/ocr/output" 
+    templates_dir        : str   = str(_BASE / "templates")
+    ocr_output_dir       : str   = "service/ocr/output"
 
     # Change between engines
     #   OCR_ENGINE=paddle  uvicorn main:app --reload  ← default
@@ -58,9 +63,10 @@ class MRZResult:
 
 @dataclass
 class PipelineOutput:
-    mrz_verified   : Optional[MRZResult]    # MRZ with valid checksum
-    mrz_unverified : Optional[MRZResult]    # MRZ detected but checksum failed
-    english_lines  : list[TextLine]
+    document_type  : str
+    mrz_verified   : Optional[MRZResult]
+    mrz_unverified : Optional[MRZResult]
+    lines          : list[TextLine]
     english_text   : str
     source         : str
     confidence_avg : float

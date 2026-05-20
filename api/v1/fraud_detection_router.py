@@ -17,7 +17,7 @@ async def health():
 async def verify(
     request: Annotated[BaseVerifyRequest, Form(media_type="multipart/form-data")],
 ):
-    return fraud_controller.verify(files=request.document_images, id=request.id)
+    return fraud_controller.verify(files=request.document_images, id=request.id, document_type=request.document_type)
 
 
 @router.post("/template", response_model=BaseDocumentTemplateResponse)
