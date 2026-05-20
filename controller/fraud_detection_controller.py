@@ -1,54 +1,112 @@
-from fastapi import UploadFile
-import shutil
-from pathlib import Path
+"""Pipeline orchestrator: glue between the API and the four service modules.
 
-from service.preprocessor import preprocessor
-from service.tampering import tampering
+Order matters:
+    metadata → tampering → preprocessor → ocr
+Tampering must run on RAW pixels (before preprocessor), or its forensic
+signal is invalid. Metadata is byte-level and runs first because it's cheap.
+"""
+
+from __future__ import annotations
+
+import shutil
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import List
+
+from fastapi import UploadFile
+
+from api.v1.schema.verify import BaseVerifyResponse
+from service import policy, report_builder
 from service.metadata import metadata
 from service.ocr import ocr
+from service.preprocessor import preprocessor
+from service.preprocessor.app.io.writer import save_image
+from service.tampering import tampering
+from service.template_ocr import template_ocr
 
-DEST_PATH = "files"
+from model.document_template import DocumentTemplate
 
-
-def process_file(file_path: str):
-    # Call the process file function in pipeline
-    pass
-
-
-def process_files(files: list[UploadFile], id: str):
-    file_paths = []
-    for file in files:
-        file_paths.append(upload_file(file, id))
-
-    # Files already on local dir imgs/
-    # TODO: Call the service for preprocessing images
-    preprocessor.process_batch(file_paths=file_paths)
-
-    """
-    Maybe you can save the file paths for the processed images
-    processed_file_paths = preprocessor.process_batch(file_paths=file_paths)
-    """
-
-    # Next, perform metadata, tampering, and OCR analysis
-    metadata.extract(file_paths=file_paths)
-    tampering.analyze()
-
-    ocr.process(
-        file_path=file_paths
-    )  # Check whether to process a batch or one single image
+FILES_PATH = "files"
+TEMPLATE_PATH = "template"
 
 
-def upload_file(file: UploadFile, id: str) -> str:
-    dest_path = Path(f"{DEST_PATH}/{id}")
-    dest_path.mkdir(parents=True, exist_ok=True)
+def upload_file(file: UploadFile, path: str, id: str) -> Path:
+    """Save uploaded file under files/<id>/. Returns the saved path."""
+    dest_dir = Path(f"{path}/{id}")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    path = dest_dir / file.filename
+    with path.open(mode="wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    print(f" > File saved: {path}")
+    return path
 
-    file_path = dest_path / file.filename
-    with file_path.open(mode="wb") as buffer:
-        try:
-            shutil.copyfileobj(file.file, buffer)
-            print(f" > File saved: {file_path}")
-        except Exception as e:
-            print(f" x Error writing file: {file.filename} - {e}")
-            return ""
 
-    return file_path
+def verify(files: list[UploadFile], id: str, document_type: str | None = None) -> BaseVerifyResponse:
+    """Run the full pipeline on the uploaded files of a single document."""
+    request_id = str(uuid.uuid4())
+    started_at = time.perf_counter()
+
+    paths: List[Path] = [upload_file(file=f, path=FILES_PATH, id=id) for f in files]
+
+    timings: dict[str, int] = {}
+
+    t0 = time.perf_counter()
+    metadata_reports = metadata.extract(paths)
+    timings["metadata"] = int((time.perf_counter() - t0) * 1000)
+
+    t0 = time.perf_counter()
+    tampering_reports = tampering.analyze(paths, output_subdir=id)
+    timings["tampering"] = int((time.perf_counter() - t0) * 1000)
+
+    t0 = time.perf_counter()
+    processed_pages = preprocessor.process(paths, output_subdir=id)
+    timings["preprocessor"] = int((time.perf_counter() - t0) * 1000)
+
+    t0 = time.perf_counter()
+    # ocr_results = ocr.extract(processed_pages, output_subdir=id) # De la branch Andy
+    ocr_paths = [
+        save_image(page, Path(FILES_PATH) / id / "processed")
+        for page in processed_pages
+    ]
+    ocr_results = ocr.process(ocr_paths, document_type=document_type)
+    timings["ocr"] = int((time.perf_counter() - t0) * 1000)
+
+    risk = policy.compute(
+        metadata_reports,
+        tampering_reports,
+        processed_pages,
+        ocr_results,
+    )
+
+    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    return report_builder.build(
+        request_id=request_id,
+        timestamp=timestamp,
+        elapsed_ms=elapsed_ms,
+        elapsed_ms_per_stage=timings,
+        metadata_reports=metadata_reports,
+        tampering_reports=tampering_reports,
+        processed_pages=processed_pages,
+        ocr_results=ocr_results,
+        risk=risk,
+        ocr_engine_name="paddleocr",
+    )
+
+
+def upload_template(
+    img: UploadFile, document_name: str, document_type: str, country: str | None = None
+) -> DocumentTemplate:
+    path = upload_file(file=img, path=TEMPLATE_PATH, id="test")
+
+    new_template = template_ocr.upload(
+        document_type=document_type,
+        country=country,
+        document_name=document_name,
+        img_path=path.as_posix(),
+    )
+
+    return new_template

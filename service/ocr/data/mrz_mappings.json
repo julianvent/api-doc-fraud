@@ -1,0 +1,7 @@
+{
+    "visa": {
+        "visa_number": "document_number",
+        "date_of_expiry_ddmmyyyy": "date_of_expiry",
+        "surname_and_given_name": ["surname", "given_names"]
+    }
+}

@@ -1,0 +1,67 @@
+{
+    "document_type": "passport",
+    "country": "mex",
+    "document_name": "passport",
+    "img_path": "template/test/passportA.jpeg",
+    "fields": {
+        "personal": [
+            {
+                "key": "surname",
+                "label": "Surname",
+                "type": "text"
+            },
+            {
+                "key": "given_names",
+                "label": "Given names",
+                "type": "text"
+            },
+            {
+                "key": "birth_date",
+                "label": "Date of birth",
+                "type": "date"
+            },
+            {
+                "key": "sex",
+                "label": "Sex",
+                "type": "single_letter"
+            },
+            {
+                "key": "nationality",
+                "label": "Nationality",
+                "type": "text"
+            },
+            {
+                "key": "place_of_birth",
+                "label": "Place of birth",
+                "type": "text"
+            },
+            {
+                "key": "personal_no",
+                "label": "Personal No.",
+                "type": "text"
+            }
+        ],
+        "document": [
+            {
+                "key": "document_number",
+                "label": "Passport No.",
+                "type": "alphanumeric"
+            },
+            {
+                "key": "expiry_date",
+                "label": "Expiry date",
+                "type": "date"
+            },
+            {
+                "key": "type",
+                "label": "Type",
+                "type": "code"
+            },
+            {
+                "key": "country",
+                "label": "Issuing country code",
+                "type": "code"
+            }
+        ]
+    }
+}

@@ -1,0 +1,52 @@
+{
+    "document_type": "visa",
+    "country": "null",
+    "document_name": "visa",
+    "img_path": "template/test/generic_visa.png",
+    "fields": {
+        "personal": [
+            {
+                "key": "surname",
+                "label": "Surname",
+                "type": "text"
+            },
+            {
+                "key": "given_names",
+                "label": "Given Name",
+                "type": "text"
+            },
+            {
+                "key": "passport_number",
+                "label": "Passport Number",
+                "type": "alphanumeric"
+            }
+        ],
+        "document": [
+            {
+                "key": "document_number",
+                "label": "Passport No.",
+                "type": "alphanumeric"
+            },
+            {
+                "key": "expiry_date",
+                "label": "Expiry date",
+                "type": "date"
+            },
+            {
+                "key": "issue_date",
+                "label": "Issue Date",
+                "type": "date"
+            },
+            {
+                "key": "visa_type_class",
+                "label": "Visa Type / Class",
+                "type": "code"
+            },
+            {
+                "key": "entries",
+                "label": "Entries",
+                "type": "entry_count"
+            }
+        ]
+    }
+}
