@@ -1,12 +1,3 @@
-"""Rendering utilities for tampering detection outputs.
-
-Artifacts produced per page:
-  * heatmap PNG: raw 8-bit grayscale of the model probability map, for
-    archival and manual inspection in image viewers.
-  * overlay PNG: the page image blended with a JET-colormapped heatmap,
-    annotated with suspicious-region bboxes, the face localizer bbox, and a
-    top-left banner summarizing the verdict.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,14 +6,14 @@ from typing import Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from .report import FaceDetection, Region, Verdict, Zone
+from .report import FaceDetection, Region, RiskLabel, Zone
 
 _HEATMAP_COLORMAP = cv2.COLORMAP_JET
 
-_VERDICT_BANNER_BGR = {
-    Verdict.ACCEPT: (60, 140, 40),
-    Verdict.REVIEW: (0, 165, 255),
-    Verdict.HARD_REJECT: (40, 40, 200),
+_LABEL_BANNER_BGR = {
+    RiskLabel.LEGITIMATE: (60, 140, 40),
+    RiskLabel.SUSPICIOUS: (0, 165, 255),
+    RiskLabel.LIKELY_MANIPULATED: (40, 40, 200),
 }
 
 _ZONE_BBOX_BGR = {
@@ -42,7 +33,7 @@ _LABEL_PADDING = 4
 
 
 def save_heatmap(heatmap: np.ndarray, output_path: Path) -> Path:
-    """Persist a raw [0, 1] heatmap as an 8-bit grayscale PNG."""
+    """Save a [0,1] heatmap as 8-bit grayscale PNG."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     arr = (np.clip(heatmap, 0.0, 1.0) * 255.0).astype(np.uint8)
     cv2.imwrite(str(output_path), arr)
@@ -55,11 +46,11 @@ def save_overlay(
     regions: Sequence[Region],
     output_path: Path,
     face: Optional[FaceDetection] = None,
-    verdict: Optional[Verdict] = None,
-    verdict_score: Optional[float] = None,
+    risk_label: Optional[RiskLabel] = None,
+    fraud_score: Optional[float] = None,
     alpha: float = 0.5,
 ) -> Path:
-    """Render a human-readable overlay and persist it as PNG."""
+    """Render an annotated overlay PNG (heatmap + bboxes + score banner)."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
 
@@ -90,8 +81,8 @@ def save_overlay(
             pt1,
         )
 
-    if verdict is not None:
-        _draw_verdict_banner(composite, verdict, verdict_score)
+    if risk_label is not None:
+        _draw_score_banner(composite, risk_label, fraud_score)
 
     cv2.imwrite(str(output_path), composite)
     return output_path
@@ -100,7 +91,7 @@ def save_overlay(
 def save_face_crop(
     image_rgb: np.ndarray, face: FaceDetection, output_path: Path,
 ) -> Optional[Path]:
-    """Persist the cropped face region, or return None if no face."""
+    """Save the cropped face region, or None if no face detected."""
     if not face.detected or face.bbox is None:
         return None
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,11 +108,14 @@ def save_face_crop(
     return output_path
 
 
-def _draw_verdict_banner(
-    image_bgr: np.ndarray, verdict: Verdict, score: Optional[float],
+def _draw_score_banner(
+    image_bgr: np.ndarray, risk_label: RiskLabel, score: Optional[float],
 ) -> None:
-    color = _VERDICT_BANNER_BGR[verdict]
-    text = verdict.value if score is None else f"{verdict.value}  score={score:.2f}"
+    color = _LABEL_BANNER_BGR[risk_label]
+    text = (
+        risk_label.value if score is None
+        else f"{risk_label.value}  fraud_score={score:.2f}"
+    )
     (tw, th), baseline = cv2.getTextSize(text, _LABEL_FONT, 0.9, 2)
     pad = 10
     cv2.rectangle(

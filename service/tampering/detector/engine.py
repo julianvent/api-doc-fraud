@@ -17,20 +17,13 @@ _DEFAULT_DTD_WEIGHTS = _WEIGHTS_DIR / "dtd_doctamper.pth"
 _DEFAULT_VPH_WEIGHTS = _WEIGHTS_DIR / "vph_imagenet.pt"
 _DEFAULT_SWIN_WEIGHTS = _WEIGHTS_DIR / "swin_imagenet.pt"
 _DEFAULT_QT_TABLE = _WEIGHTS_DIR / "qt_table.pk"
-_DEFAULT_MVSS_WEIGHTS = _WEIGHTS_DIR / "mvssnet_casia.pt"
+_DEFAULT_TRUFOR_WEIGHTS = _WEIGHTS_DIR / "trufor" / "trufor.pth.tar"
 
-# MVSS-Net input spatial size — matches the upstream demo / inference script.
-_MVSS_INPUT_SIZE = 512
-
-# Model input spatial size. DocTamper was trained on 512x512 crops; we
-# resize inputs to this resolution to stay aligned with the training
-# distribution (Swin position biases, FPH block assumptions).
+# Fixed input size for predictable latency.
+_TRUFOR_INPUT_SIZE = 512
+# DocTamper was trained on 512x512 crops.
 _MODEL_INPUT_SIZE = 512
-
-# JPEG quality used to extract DCT coefficients at inference time. 75 is the
-# default lower bound used in the upstream Colab demo and matches the model's
-# robustness range. Higher quality preserves more detail but narrows the
-# distribution the model was exposed to during training.
+# JPEG quality for DCT coefficient extraction at inference time.
 _JPEG_QUALITY = 85
 
 _IMAGENET_MEAN = np.asarray([0.485, 0.456, 0.406], dtype=np.float32)
@@ -41,17 +34,12 @@ class TamperingEngine(Protocol):
     name: str
 
     def detect(self, image: np.ndarray) -> Tuple[np.ndarray, float]:
-        """Run detection on a RGB image.
-
-        Returns (heatmap, score):
-            heatmap: HxW float32 in [0, 1], same spatial size as the input.
-            score:   float in [0, 1], 0 = clean / 1 = tampered.
-        """
+        """Return (HxW float32 heatmap, score in [0,1])."""
         ...
 
 
 class MockEngine:
-    """Low-uniform heatmap plus deterministic noise. Exercises the pipeline only."""
+    """Stub engine for exercising the pipeline."""
 
     name = "mock-clean"
 
@@ -72,12 +60,8 @@ class DocTamperEngine:
     quantized DCT coefficients of the grayscale channel, and the JPEG
     quantization table used to produce those coefficients.
 
-    The upstream repository uses `jpegio` to extract DCT coefficients. Since
-    `jpegio` lacks wheels for modern Python versions on Windows, we approximate
-    the quantized DCT by encoding the image to JPEG at the target quality,
-    decoding it back, and recomputing block-wise DCT coefficients via scipy.
-    This is not bit-identical to jpegio's output but preserves the statistics
-    the FPH branch of the model relies on.
+    Upstream uses `jpegio` for DCT extraction; we approximate via JPEG
+    round-trip + scipy DCT since `jpegio` lacks Windows wheels.
     """
 
     name = "doctamper"
@@ -142,7 +126,7 @@ class DocTamperEngine:
             weights_only=False,
         )
         state = checkpoint.get("state_dict", checkpoint)
-        # Upstream checkpoints may be wrapped in DataParallel (`module.` prefix).
+        # Strip the DataParallel `module.` prefix if present.
         state = {
             (k[len("module."):] if k.startswith("module.") else k): v
             for k, v in state.items()
@@ -167,8 +151,7 @@ class DocTamperEngine:
                 heatmap, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR,
             )
 
-        # Global score as the mean tampered probability: bounded in [0, 1] and
-        # grows with both the size and confidence of suspicious regions.
+        # Mean tampered probability across the heatmap.
         global_score = float(heatmap.mean())
         return heatmap, global_score
 
@@ -198,10 +181,8 @@ class DocTamperEngine:
 
 
 def _register_vendored_modules(root: Path) -> None:
-    """Expose vendored model code and legacy `timm.models.layers.*` paths
-    under the names expected by upstream DocTamper code and its pickled
-    checkpoints.
-    """
+    """Expose vendored model code under the names expected by upstream
+    DocTamper code and its pickled checkpoints."""
     root_str = str(root)
     if root_str not in sys.path:
         sys.path.insert(0, root_str)
@@ -240,13 +221,7 @@ def _merge_into_main(module) -> None:
 
 
 def _patch_legacy_submodules(model) -> None:
-    """Backfill attributes that newer torch expects on legacy pickled modules.
-
-    Pickles produced with torch < 2.0 lack fields that current activations
-    like GELU read unconditionally. Iterating the module tree once and
-    defaulting missing attributes keeps inference compatible without
-    re-training.
-    """
+    """Backfill attributes missing from pre-2.0 torch pickles."""
     import torch.nn as nn
     from timm.layers import DropPath
 
@@ -258,12 +233,7 @@ def _patch_legacy_submodules(model) -> None:
 
 
 def _install_timm_legacy_aliases() -> None:
-    """Alias pre-1.0 `timm.models.layers.*` paths to their current equivalents.
-
-    The DocTamper checkpoints were pickled with timm 0.4.12, which exposed
-    classes like DropPath under `timm.models.layers.drop`. In modern timm
-    those live in `timm.layers`; the alias lets unpickling resolve them.
-    """
+    """Alias pre-1.0 `timm.models.layers.*` paths to current `timm.layers`."""
     import timm.layers
 
     for legacy_path in (
@@ -283,14 +253,7 @@ def _alias_module(alias: str, module) -> None:
 def _approximate_quantized_dct(
     gray: np.ndarray, qt_table: np.ndarray, quality: int,
 ) -> np.ndarray:
-    """Approximate JPEG quantized DCT coefficients without `jpegio`.
-
-    JPEG-encodes the grayscale input at `quality`, decodes it back (so pixels
-    reflect quantization noise), and then computes 8x8 block-wise DCT-II and
-    divides by the standard quantization table. This reproduces the statistics
-    `jpegio` would read from the same encoded stream closely enough for the
-    downstream FPH branch, even though it is not bit-identical.
-    """
+    """Approximate JPEG quantized DCT coefficients via encode+decode+blockwise DCT."""
     from scipy.fft import dctn
 
     ok, encoded = cv2.imencode(".jpg", gray, [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
@@ -309,107 +272,6 @@ def _approximate_quantized_dct(
     coefs = dctn(blocks, type=2, norm="ortho", axes=(-2, -1))
     quantized = np.round(coefs / qt_table.astype(np.float32))
     return quantized.swapaxes(1, 2).reshape(h8, w8)
-
-
-class MVSSNetEngine:
-    """Wrapper around MVSS-Net for pixel-level splicing detection.
-
-    The model produces a per-pixel forgery probability map. The image-level
-    score exposed to the pipeline is the maximum pixel probability — the
-    upstream reference metric — which responds sharply to localized pasted
-    regions and stays low on authentic crops.
-    """
-
-    name = "mvss-casia"
-
-    def __init__(
-        self,
-        weights_path: Path = _DEFAULT_MVSS_WEIGHTS,
-        device: str = "cpu",
-        input_size: int = _MVSS_INPUT_SIZE,
-    ) -> None:
-        try:
-            import torch
-        except ImportError as exc:
-            raise RuntimeError(
-                "torch is not installed. Run: pip install -e '.[doctamper]'"
-            ) from exc
-
-        if not Path(weights_path).is_file():
-            raise RuntimeError(f"MVSS-Net weights not found: {weights_path}")
-
-        self._torch = torch
-        self._device = torch.device(device)
-        self._input_size = int(input_size)
-        self._model = self._load_model(Path(weights_path))
-
-    def _load_model(self, weights_path: Path):
-        torch = self._torch
-        _register_mvss_module(_VENDORED_ROOT)
-        from .models.mvss.mvssnet import get_mvss
-
-        model = get_mvss(
-            backbone="resnet50", pretrained_base=False, nclass=1,
-            sobel=True, constrain=True, n_input=3,
-        )
-        checkpoint = torch.load(
-            str(weights_path), map_location=self._device, weights_only=True,
-        )
-        model.load_state_dict(checkpoint, strict=True)
-        model.eval().to(self._device)
-        return model
-
-    def detect(self, image_rgb: np.ndarray) -> Tuple[np.ndarray, float]:
-        torch = self._torch
-        orig_h, orig_w = image_rgb.shape[:2]
-        size = self._input_size
-
-        # Upstream ingests BGR frames via cv2.imread and normalizes with the
-        # ImageNet stats in that channel order, so we mirror that exactly.
-        bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-        resized = cv2.resize(bgr, (size, size), interpolation=cv2.INTER_AREA)
-        tensor_input = resized.astype(np.float32) / 255.0
-        tensor_input = (tensor_input - _IMAGENET_MEAN) / _IMAGENET_STD
-        tensor = torch.from_numpy(
-            np.ascontiguousarray(tensor_input.transpose(2, 0, 1))
-        ).float().unsqueeze(0).to(self._device)
-
-        with torch.no_grad():
-            _, seg_logits = self._model(tensor)
-        probs = torch.sigmoid(seg_logits)[0, 0]
-        heatmap = probs.cpu().numpy().astype(np.float32)
-
-        if heatmap.shape != (orig_h, orig_w):
-            heatmap = cv2.resize(
-                heatmap, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR,
-            )
-
-        # Upstream reports max as the image-level score, but that metric is
-        # brittle on ID documents where isolated pixel activations from
-        # security features (holograms, microprint) push a clean page to a
-        # false HARD_REJECT. Top-1% mean aggregates the strongest activations
-        # while ignoring single-pixel outliers — real splicing produces many
-        # high-probability pixels, scanner noise produces only a handful.
-        score = _top_fraction_mean(heatmap, fraction=0.01)
-        return heatmap, score
-
-
-def _top_fraction_mean(heatmap: np.ndarray, fraction: float) -> float:
-    """Return the mean value of the top `fraction` most-activated pixels."""
-    if heatmap.size == 0:
-        return 0.0
-    flat = heatmap.reshape(-1)
-    k = max(1, int(round(flat.size * fraction)))
-    # np.partition is an O(n) alternative to sort for top-k selection.
-    top_k = np.partition(flat, flat.size - k)[flat.size - k:]
-    return float(top_k.mean())
-
-
-def _register_mvss_module(root: Path) -> None:
-    """Expose the vendored mvss code under its expected import path."""
-    root_str = str(root)
-    if root_str not in sys.path:
-        sys.path.insert(0, root_str)
 
 
 def build_engine(
@@ -431,12 +293,105 @@ def build_engine(
     raise ValueError(f"Unknown model_name: {model_name!r}")
 
 
-def build_mvssnet_engine(device: str = "cpu") -> Optional["MVSSNetEngine"]:
-    """Factory for the MVSS-Net engine. Returns None when weights are missing
-    or torch cannot be loaded, so callers can degrade gracefully.
+class TruForEngine:
+    """TruFor (CVPR 2023): SegFormer-B2 CMX + Noiseprint++. Exposes the
+    pixel-level heatmap (softmax channel 1) and the image-level `det` score.
     """
+
+    name = "trufor-cmx-mit_b2"
+
+    def __init__(
+        self,
+        weights_path: Path = _DEFAULT_TRUFOR_WEIGHTS,
+        device: str = "cpu",
+        input_size: int = _TRUFOR_INPUT_SIZE,
+    ) -> None:
+        try:
+            import torch
+        except ImportError as exc:
+            raise RuntimeError("torch is not installed") from exc
+
+        if not Path(weights_path).is_file():
+            raise RuntimeError(f"TruFor weights not found: {weights_path}")
+
+        self._torch = torch
+        self._device = torch.device(device)
+        self._input_size = int(input_size)
+        self._model = self._load_model(Path(weights_path))
+
+    def _load_model(self, weights_path: Path):
+        torch = self._torch
+        from yacs.config import CfgNode as CN
+
+        # Config inlined from upstream trufor.yaml.
+        cfg = CN()
+        cfg.MODEL = CN()
+        cfg.MODEL.NAME = "detconfcmx"
+        cfg.MODEL.PRETRAINED = ""
+        cfg.MODEL.MODS = ("RGB", "NP++")
+        cfg.MODEL.EXTRA = CN(new_allowed=True)
+        cfg.MODEL.EXTRA.BACKBONE = "mit_b2"
+        cfg.MODEL.EXTRA.DECODER = "MLPDecoder"
+        cfg.MODEL.EXTRA.DECODER_EMBED_DIM = 512
+        cfg.MODEL.EXTRA.PREPRC = "imagenet"
+        cfg.MODEL.EXTRA.BN_EPS = 0.001
+        cfg.MODEL.EXTRA.BN_MOMENTUM = 0.1
+        cfg.MODEL.EXTRA.DETECTION = "confpool"
+        cfg.MODEL.EXTRA.CONF = True
+        cfg.DATASET = CN()
+        cfg.DATASET.NUM_CLASSES = 2
+
+        from .models.trufor.cmx.builder_np_conf import myEncoderDecoder
+        model = myEncoderDecoder(cfg=cfg)
+        checkpoint = torch.load(
+            str(weights_path), map_location=self._device, weights_only=False,
+        )
+        model.load_state_dict(checkpoint["state_dict"], strict=True)
+        model.eval().to(self._device)
+        return model
+
+    def detect(self, image_rgb: np.ndarray) -> Tuple[np.ndarray, float]:
+        """Run TruFor on an HxWx3 RGB uint8 image.
+
+        Returns (heatmap, score):
+          * heatmap: HxW float32 in [0, 1], resized back to the original
+            input dimensions. Each pixel is P(tampered).
+          * score: float in [0, 1] from the detection head — directly
+            trained for image-level decision, not derived from heatmap.
+        """
+        torch = self._torch
+        orig_h, orig_w = image_rgb.shape[:2]
+        size = self._input_size
+
+        # Upstream uses Image.open(...).convert("RGB"), tensor(transpose) / 256.
+        # Mirror that division by 256 (not 255) since the model's prepro layer
+        # was calibrated against that scaling.
+        resized = cv2.resize(image_rgb, (size, size), interpolation=cv2.INTER_AREA)
+        tensor = torch.from_numpy(
+            np.ascontiguousarray(resized.transpose(2, 0, 1))
+        ).float().unsqueeze(0).to(self._device) / 256.0
+
+        with torch.no_grad():
+            pred, _conf, det, _npp = self._model(tensor)
+
+        probs = torch.softmax(pred, dim=1)[0, 1]
+        heatmap = probs.cpu().numpy().astype(np.float32)
+
+        if heatmap.shape != (orig_h, orig_w):
+            heatmap = cv2.resize(
+                heatmap, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR,
+            )
+
+        score = float(torch.sigmoid(det).item())
+        return heatmap, score
+
+
+def build_trufor_engine(device: str = "cpu") -> Optional["TruForEngine"]:
+    """Factory. Returns None when weights or required modules are missing."""
     try:
-        return MVSSNetEngine(device=device)
+        return TruForEngine(device=device)
     except (RuntimeError, ImportError, FileNotFoundError) as exc:
-        print(f"[WARN] MVSS-Net unavailable ({exc.__class__.__name__}): {exc}")
+        print(f"[WARN] TruFor unavailable ({exc.__class__.__name__}): {exc}")
         return None
+
+

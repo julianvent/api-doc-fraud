@@ -40,19 +40,20 @@ class MetadataModuleSchema(BaseModel):
 
 class TamperingPageSchema(BaseModel):
     source: str
-    verdict: str
-    verdict_score: float
-    confidence: str
+    risk_label: str
+    fraud_score: float
+    reliability: str
     reasons: List[str]
     face_detected: bool
     doctamper_score: Optional[float] = None
-    mvssnet_score: Optional[float] = None
+    trufor_score: Optional[float] = None
+    face_trufor_score: Optional[float] = None
 
 
 class TamperingModuleSchema(BaseModel):
     pages: List[TamperingPageSchema]
-    worst_verdict: str
-    worst_score: float
+    worst_risk_label: str
+    worst_fraud_score: float
 
 
 # ── preprocessor ──────────────────────────────────────────────────────────────

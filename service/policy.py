@@ -1,7 +1,7 @@
-"""Policy: combine the 4 module outputs into a single risk verdict.
+"""Combine the 4 module outputs into a single ACCEPT/REVIEW/REJECT verdict.
 
-This is the only place where "what to do with the signals" lives. Tweaking
-weights or thresholds happens here without touching detectors or the API.
+Tampering contributes a continuous `fraud_score` and a `risk_label`; this
+module is where weights and thresholds live.
 """
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from typing import List
 
 from service.metadata.analyzer import MetadataReport
 from service.preprocessor.app.models import ProcessedPage
-from service.tampering.detector import PageReport, Verdict
+from service.tampering.detector import PageReport, RiskLabel
 
-# Weights of each signal in the aggregate score.
+# Weight of each signal in the aggregate score.
 _W_METADATA = 0.45
 _W_TAMPERING = 0.45
 _W_OCR = 0.10
@@ -21,6 +21,13 @@ _REJECT_THRESHOLD = 0.75
 _REVIEW_THRESHOLD = 0.40
 _METADATA_REVIEW_THRESHOLD = 0.7
 _LOW_OCR_CONF = 0.5
+
+# Rank used to find the worst tampering page.
+_RISK_RANK = {
+    RiskLabel.LIKELY_MANIPULATED: 2,
+    RiskLabel.SUSPICIOUS: 1,
+    RiskLabel.LEGITIMATE: 0,
+}
 
 
 @dataclass
@@ -40,7 +47,7 @@ def compute(
 ) -> RiskAggregate:
     """Aggregate signals from the 4 modules into a single verdict."""
     metadata_susp = _max_metadata_suspicion(metadata_reports)
-    worst_tamper_score, worst_tamper_verdict = _worst_tampering(tampering_reports)
+    worst_tamper_score, worst_tamper_risk = _worst_tampering(tampering_reports)
     avg_ocr_conf = _avg_ocr_confidence(ocr_results)
 
     score = (
@@ -50,7 +57,7 @@ def compute(
     )
     score = round(min(max(score, 0.0), 1.0), 3)
 
-    verdict, reasons = _decide(score, metadata_susp, worst_tamper_verdict)
+    verdict, reasons = _decide(score, metadata_susp, worst_tamper_risk)
     flags = _collect_flags(metadata_reports, tampering_reports, avg_ocr_conf)
     confidence = round(_aggregate_confidence(metadata_reports, avg_ocr_conf), 3)
 
@@ -71,13 +78,12 @@ def _max_metadata_suspicion(reports: List[MetadataReport]) -> float:
     return max(r.suspicion_score for r in reports)
 
 
-def _worst_tampering(reports: List[PageReport]) -> tuple[float, str]:
+def _worst_tampering(reports: List[PageReport]) -> tuple[float, RiskLabel]:
     if not reports:
-        return 0.0, "ACCEPT"
-    rank = {"HARD_REJECT": 2, "REVIEW": 1, "ACCEPT": 0}
-    worst_v = max(reports, key=lambda r: rank.get(_verdict_str(r.verdict), 0))
-    worst_score = max(r.verdict_score for r in reports)
-    return worst_score, _verdict_str(worst_v.verdict)
+        return 0.0, RiskLabel.LEGITIMATE
+    worst = max(reports, key=lambda r: _RISK_RANK.get(r.risk_label, 0))
+    worst_score = max(r.fraud_score for r in reports)
+    return worst_score, worst.risk_label
 
 
 def _avg_ocr_confidence(results: list) -> float:
@@ -91,18 +97,14 @@ def _avg_ocr_confidence(results: list) -> float:
     return sum(confidences) / len(confidences)
 
 
-def _verdict_str(v) -> str:
-    if isinstance(v, Verdict):
-        return v.value
-    return str(v)
-
-
 # ── decision rule ─────────────────────────────────────────────────────────────
 
-def _decide(score: float, metadata_susp: float, tamper_verdict: str) -> tuple[str, List[str]]:
+def _decide(
+    score: float, metadata_susp: float, tamper_risk: RiskLabel,
+) -> tuple[str, List[str]]:
     reasons: List[str] = []
-    if tamper_verdict == "HARD_REJECT":
-        reasons.append("tampering: HARD_REJECT on at least one page")
+    if tamper_risk == RiskLabel.LIKELY_MANIPULATED:
+        reasons.append("tampering: LIKELY_MANIPULATED on at least one page")
         return "REJECT", reasons
     if score >= _REJECT_THRESHOLD:
         reasons.append(f"aggregate score {score:.2f} >= {_REJECT_THRESHOLD}")
@@ -112,8 +114,8 @@ def _decide(score: float, metadata_susp: float, tamper_verdict: str) -> tuple[st
             f"aggregate score {score:.2f} or metadata suspicion {metadata_susp:.2f} crosses review threshold"
         )
         return "REVIEW", reasons
-    if tamper_verdict == "REVIEW":
-        reasons.append("tampering: REVIEW")
+    if tamper_risk == RiskLabel.SUSPICIOUS:
+        reasons.append("tampering: SUSPICIOUS")
         return "REVIEW", reasons
     return "ACCEPT", reasons
 
@@ -130,8 +132,8 @@ def _collect_flags(
         for f in mr.flags:
             flags.append(f.code)
     for pr in tampering_reports:
-        if _verdict_str(pr.verdict) != "ACCEPT":
-            flags.append(f"TAMPERING_{_verdict_str(pr.verdict)}")
+        if pr.risk_label != RiskLabel.LEGITIMATE:
+            flags.append(f"TAMPERING_{pr.risk_label.value}")
     if avg_ocr_conf and avg_ocr_conf < _LOW_OCR_CONF:
         flags.append("LOW_OCR_CONFIDENCE")
     return list(dict.fromkeys(flags))  # de-duplicate, keep order

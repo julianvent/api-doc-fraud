@@ -17,6 +17,7 @@ from .extractor import MetadataSnapshot
 from .whitelists import (
     AI_GENERATION_CHUNK_KEYS,
     ALWAYS_WRITES_MAKERNOTE,
+    IMAGE_EDITORS,
     LEAVES_XMP_HISTORY,
     TRUSTED_GOVT,
     contains_any,
@@ -201,6 +202,44 @@ def rule_editor_without_history(snap: MetadataSnapshot) -> Flag | None:
     )
 
 
+def rule_editor_software_present(snap: MetadataSnapshot) -> Flag | None:
+    """Image editor declared as Software/producer of an ID document."""
+    match = contains_any(_all_software_identifiers(snap), IMAGE_EDITORS)
+    if not match:
+        return None
+    return Flag(
+        code="EDITOR_SOFTWARE_PRESENT",
+        severity="medium",
+        category="A",
+        evidence=f"Image editor declared in Software/producer: {match!r}",
+    )
+
+
+def rule_missing_camera_exif(snap: MetadataSnapshot) -> Flag | None:
+    """JPEG without any camera/edit provenance signals.
+
+    A JPG of a real document is normally produced by a camera (leaves EXIF
+    DateTimeOriginal / Make / Model) or by an editor (leaves Software / XMP).
+    A file with none of those is anomalous — typically a re-encoded crop or
+    AI-generated raster saved as bare JFIF.
+    """
+    if snap.format not in {"jpg", "jpeg"}:
+        return None
+    has_camera_exif = any(
+        snap.exif.get(k) for k in ("DateTimeOriginal", "Make", "Model")
+    )
+    has_software = bool(snap.exif.get("Software"))
+    has_xmp = bool(snap.xmp)
+    if has_camera_exif or has_software or has_xmp:
+        return None
+    return Flag(
+        code="MISSING_CAMERA_EXIF",
+        severity="medium",
+        category="D",
+        evidence="JPEG lacks DateTimeOriginal/Make/Model/Software/XMP (bare JFIF)",
+    )
+
+
 def rule_scanner_with_edit_history(snap: MetadataSnapshot) -> Flag | None:
     if snap.format != "pdf":
         return None
@@ -325,6 +364,8 @@ _RULES = (
     rule_dimension_mismatch,
     rule_device_fingerprint_inconsistent,
     rule_editor_without_history,
+    rule_editor_software_present,
+    rule_missing_camera_exif,
     rule_scanner_with_edit_history,
     rule_date_inconsistency,
     rule_temporal_anomaly,
