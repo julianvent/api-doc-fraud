@@ -95,3 +95,4 @@
     sqlalchemy
     alembic
     streamlit
+    psycopg2-binary
