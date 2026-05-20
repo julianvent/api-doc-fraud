@@ -1,40 +1,43 @@
 from model.document_template import DocumentTemplate
 from repository.document_template import create_template
 
+from .extractor import extract_template
+from .model import TemplateConfig
+
 
 def upload(
     document_name: str,
     document_type: str,
     img_path: str,
+    country: str | None = None,
 ) -> DocumentTemplate:
-    # perform ocr for extracting fields
-    fields: list[dict] = [{"name": "Full name", "bbox": {1, 2, 3, 4}}]
-
-    """ Fields schema example 
-    
-    fields = {
-        "date_of_birth": {
-            "label": "Date of birth",
-            "label_region": [x1, y1, x2, y2],
-        },
-        "given_name": {
-            "label": "Given name",
-            "label_region": [x1, y1, x2, y2]
-        },
-        ...
-    }
-    
     """
+    Identifica los campos de un documento y los persiste en la base de datos
+    Devuelve {personal: [...], document: [...]} con {key, label, type} por campo
+    example:
+    {
+        "personal": [
+            {"key": "full_name", "label": "Full Name", "type": "text"},
+        ],
+        "document": [
+            {"key": "document_number", "label": "Document Number", "type": "alphanumeric"},
+        ]
+    """
+    config = TemplateConfig()
 
-    # log output for verification
-    print(fields)
+    result   = extract_template(img_path, config=config, document_type=document_type, country=country)
+    personal = result["personal"]
+    document = result["document"]
 
-    # commit to database
+    print(f"[template_ocr] {document_type} → {result['n_fields']} campos "
+          f"({len(personal)} personal, {len(document)} document)")
+
     template = create_template(
-        document_name=document_name,
         document_type=document_type,
-        img_path=img_path,
-        fields=fields,
+        country=country,
+        document_name=document_name,
+        img_path=str(img_path),
+        fields={"personal": personal, "document": document},
     )
 
     return template

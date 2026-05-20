@@ -1,4 +1,4 @@
-"""DocTamper adapter: turns the low-level engine output into a contract result. """
+"""DocTamper adapter: engine output → DocTamperResult."""
 from __future__ import annotations
 
 from typing import List, Optional, Tuple
@@ -27,8 +27,7 @@ class DocTamperDetector:
         face: FaceDetection,
         thresholds: Thresholds,
     ) -> Tuple[DocTamperResult, np.ndarray]:
-        """Return (result, heatmap). The heatmap is the raw per-pixel map used
-        for artifact rendering; it never appears in the contract itself."""
+        """Return (result, raw heatmap)."""
         heatmap, score_mean = self._engine.detect(image_rgb)
         heatmap = np.clip(heatmap, 0.0, 1.0).astype(np.float32)
 
@@ -131,8 +130,7 @@ def _classify_zone(
         return Zone.TEXT
     rx1, ry1, rx2, ry2 = region_bbox
     fx1, fy1, fx2, fy2 = face_bbox_norm
-    # Use the region centroid so partial overlap at the face border does not
-    # force a PHOTO classification on regions that live mostly in the text.
+    # Centroid test so partial face-border overlap doesn't misclassify as PHOTO.
     cx = (rx1 + rx2) / 2
     cy = (ry1 + ry2) / 2
     if fx1 <= cx <= fx2 and fy1 <= cy <= fy2:

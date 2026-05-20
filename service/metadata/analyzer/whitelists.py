@@ -22,6 +22,16 @@ LEAVES_XMP_HISTORY: frozenset[str] = frozenset({
     "affinity photo",
 })
 
+# Image editors whose mere presence in Software/producer is a signal for
+# documents that should originate from a camera or government scanner.
+IMAGE_EDITORS: frozenset[str] = frozenset({
+    "adobe photoshop", "photoshop", "lightroom", "adobe lightroom",
+    "affinity photo", "affinity designer",
+    "gimp", "pixelmator", "krita", "paint.net", "paint shop pro",
+    "corel", "inkscape", "canva", "figma", "sketch",
+    "acdsee", "luminar", "topaz",
+})
+
 # PNG/JPEG info keys whose presence is itself the signal of generative origin.
 AI_GENERATION_CHUNK_KEYS: frozenset[str] = frozenset({
     "parameters",
