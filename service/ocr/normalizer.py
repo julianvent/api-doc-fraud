@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 
 DATE_FORMATS = [
@@ -37,11 +38,23 @@ def normalize_date(value: str) -> str | None:
     if not value:
         return None
     clean = value.strip().upper()
+
     for fmt in DATE_FORMATS:
         try:
             return datetime.strptime(clean, fmt).strftime("%d/%m/%Y")
         except ValueError:
             continue
+
+    if re.search(r"[A-Z]+/[A-Z]+", clean):
+        variant_before = re.sub(r"([A-Z]+)/[A-Z]+", r"\1", clean)
+        variant_after  = re.sub(r"[A-Z]+/([A-Z]+)", r"\1", clean)
+        for variant in (variant_before, variant_after):
+            for fmt in DATE_FORMATS:
+                try:
+                    return datetime.strptime(variant, fmt).strftime("%d/%m/%Y")
+                except ValueError:
+                    continue
+
     return value
 
 

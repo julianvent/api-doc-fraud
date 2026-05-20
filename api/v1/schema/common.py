@@ -78,6 +78,7 @@ class OCRPageSchema(BaseModel):
     verdict: Optional[str] = None
     confidence_avg: float = 0.0
     fields: Optional[dict] = None
+    extras: Optional[dict] = None
     match_score: Optional[float] = None
     flags: Optional[List[str]] = None
 

@@ -137,6 +137,7 @@ def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
         verdict        = r.get("verdict")        or nested.get("verdict")
         confidence_avg = r.get("confidence_avg") or nested.get("confidence_avg", 0.0)
         fields         = r.get("fields")         or nested.get("fields")
+        extras         = r.get("extras")         or nested.get("extras")
         match_score    = r.get("match_score")
         flags          = r.get("flags")
 
@@ -149,6 +150,7 @@ def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
             verdict        = verdict,
             confidence_avg = confidence_avg,
             fields         = fields,
+            extras         = extras,
             match_score    = match_score,
             flags          = flags,
         ))

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import cv2
 
-from service.ocr.agent.agent import _load_template, _build_spatial_layout
+from service.ocr.agent.agent import _load_template, _build_spatial_layout, _iter_template_fields
 from service.ocr.agent.base import LLMBackend
 from service.ocr.agent.ollama import OllamaBackend
 from service.ocr.backends import OllamaVisionBackend
@@ -156,7 +156,7 @@ def _run(image_path: str | Path,
     template_path = Path(config.templates_dir) / f"{document_type}.json"
 
     if template is not None:
-        n_fields = len(template.get("fields", []))
+        n_fields = len(_iter_template_fields(template))
         print(f"[OCR] template FOUND at {template_path} ({n_fields} fields) → VLM guided by template")
     else:
         print(f"[OCR] no template at {template_path} → VLM free extraction")

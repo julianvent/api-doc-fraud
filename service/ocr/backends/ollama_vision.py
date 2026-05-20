@@ -22,8 +22,13 @@ class OllamaVisionBackend(VisionBackend):
             "stream" : False,
             "options": {
                 "temperature": 0.0,
-                "num_predict": max_tokens
+                "num_predict": max_tokens,
+                "num_ctx"    : 16384
             }
         })
         response.raise_for_status()
-        return response.json()["response"].strip()
+        body = response.json()
+        text = body.get("response", "").strip()
+        if not text:
+            print(f"[VLM] empty response. Ollama returned: {body}")
+        return text

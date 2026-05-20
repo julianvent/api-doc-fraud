@@ -1,7 +1,7 @@
 import json
 import re
 
-from .agent.agent import _build_fields_guide
+from .agent.agent import _build_fields_guide, _iter_template_fields
 from .backends import VisionBackend
 from .models import PipelineOutput
 from .normalizer import normalize_fields
@@ -150,12 +150,19 @@ def extract_with_vision(image_path: str,
         fields_guide = _build_fields_guide(template)
         prompt = f"""{prompt}
 
-## Required fields (use EXACTLY these keys, do not invent or rename)
-For each field listed below, extract its value from the document image. Use the EXACT key shown — do not translate, rename, or merge keys. Use the value type hint to validate what kind of data to expect. If a field cannot be found in the image, set its value to null.
+## Required fields (PASS 1 — use EXACTLY these keys)
+For each field listed below, extract its value from the document image. Use the EXACT key shown — do not rename, translate, or merge. The label on the document may be in any language (Spanish, English, Hindi, etc.); the required key already specifies the concept. Use the value type hint to validate. If after thoroughly scanning the whole image you cannot find a field, set its value to null.
 
 {fields_guide}
 
-Do NOT add fields that are not listed above when emitting `fields`."""
+## Additional fields (PASS 2 — be EQUALLY exhaustive here)
+After completing Pass 1, scan the document AGAIN looking for EVERY OTHER labeled piece of data you can identify. This pass is just as important as Pass 1 — do not skip it, do not be conservative.
+
+Include in `fields` every additional label-value pair you find that is NOT already covered by the required list above. Use English snake_case keys for these (e.g. `address`, `signature_date`, `issuing_authority`, `place_of_issue`, `father_name`, `mother_name`, `nationality_code`, `document_class`, `observations`, `endorsements`).
+
+Be exhaustive: corners, headers, footers, side columns, multi-line addresses, anything with a clear label and a real value. Only skip purely decorative text (titles, watermarks, country names already known, signatures without an associated label, MRZ block at the bottom).
+
+Do not invent fields with no clear label, but do NOT skip a field just because it seems minor or uncommon. The goal is a complete map of every label-value pair on the document."""
 
     if spatial_layout:
         prompt = f"""{prompt}
@@ -185,9 +192,11 @@ The OCR engine extracted this layout from the same image. Use the image as the p
 
     flags: list[str] = []
     match_score = None
+    extras: dict = {}
 
     if template is not None:
-        template_keys = [f.get("key") for f in template.get("fields", []) if f.get("key")]
+        template_keys = [f.get("key") for f in _iter_template_fields(template) if f.get("key")]
+        extras        = {k: v for k, v in agent_fields.items() if k not in template_keys and v}
         agent_fields  = {k: v for k, v in agent_fields.items() if k in template_keys}
         missing       = [k for k in template_keys if not agent_fields.get(k)]
         for k in missing:
@@ -198,6 +207,8 @@ The OCR engine extracted this layout from the same image. Use the image as the p
         print(f"[OCR] template match_score: {found_count}/{len(template_keys)} = {match_score}")
         if missing:
             print(f"[OCR] missing template fields → flags: {missing}")
+        if extras:
+            print(f"[OCR] extras (non-template fields): {list(extras.keys())}")
 
     inconsistencies, mrz_flags = _compare_fields_vs_mrz(agent_fields, output)
     flags.extend(mrz_flags)
@@ -213,6 +224,7 @@ The OCR engine extracted this layout from the same image. Use the image as the p
             "source"         : backend.__class__.__name__,
             "document_type"  : doc_type,
             "fields"         : agent_fields,
+            "extras"         : extras,
             "inconsistencies": inconsistencies,
             "confidence"     : parsed.get("confidence"),
             "verdict"        : verdict,
@@ -221,6 +233,7 @@ The OCR engine extracted this layout from the same image. Use the image as the p
 
         "document_type"  : doc_type,
         "fields"         : agent_fields,
+        "extras"         : extras,
         "match_score"    : match_score,
         "flags"          : flags,
         "verdict"        : verdict,
@@ -229,6 +242,7 @@ The OCR engine extracted this layout from the same image. Use the image as the p
         "result": {
             "document_type"  : doc_type,
             "fields"         : agent_fields,
+            "extras"         : extras,
             "inconsistencies": inconsistencies,
             "flags"          : flags,
             "match_score"    : match_score,
