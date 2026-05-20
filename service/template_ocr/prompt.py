@@ -1,120 +1,102 @@
 _PROMPT_VISION_BASE = """\
 You are analyzing an official identity document image (passport, visa, ID card, etc.).
-Your task is to identify all data fields and classify them into two categories.
-
+Identify all data fields and classify them into two categories: "personal" and "document".
+ 
 ──────────────────────────────────────────────
-CRITICAL RULE — NO HALLUCINATION
+CRITICAL — ONLY WHAT IS VISIBLE
 ──────────────────────────────────────────────
-
-Only report fields that are EXPLICITLY VISIBLE as printed text in the document image.
-Do NOT infer, assume or add fields based on what you know about document types.
-If a field is not visibly printed in the image, do not include it.
-
+ 
+Only include fields that are EXPLICITLY VISIBLE as printed text in the image.
+Do NOT infer or add fields based on document type knowledge.
+ 
 ──────────────────────────────────────────────
-CATEGORY DEFINITIONS
+CATEGORIES
 ──────────────────────────────────────────────
-
-"personal" — information about the document HOLDER:
-  - Full name, surname, given names
-  - Date of birth, place of birth
-  - Sex / gender
-  - Nationality
-  - Any personal identity code (national ID, tax code, biometric code, etc.)
-  - Reference to another personal document (e.g. a passport number printed on a visa
-    belongs here — it identifies the person, not the current document)
-
-"document" — information about THIS document itself:
-  - Document number / identifier
-  - Date of issue and date of expiry
-  - Document type code
-  - Issuing country or authority code
-  - Number of permitted entries (for travel documents)
-  - Special endorsements, remarks, or annotations
-  - Visa category or type
-
+ 
+"personal" — about the document HOLDER:
+  names, birth date, birth place, sex, nationality, personal identity codes,
+  references to the holder's other documents (e.g. passport number on a visa)
+ 
+"document" — about THIS document:
+  document number, issue date, expiry date, document type, issuing country code,
+  number of entries, visa type/category, special endorsements or remarks
+ 
 ──────────────────────────────────────────────
-FIELD FORMAT
+KEY NORMALIZATION
 ──────────────────────────────────────────────
 
-For each field return:
-  key   : snake_case derived ONLY from the English label text — strip punctuation,
-          replace spaces with underscores, lowercase. No extra normalization.
-          Example: "Expiry date" → "expiry_date", "Passport No." → "passport_no"
-          Exception: if the document number has no label, use the code itself as key.
-  label : if the field label is bilingual, use ONLY the English portion exactly as
-          it appears in the document — do not include the other language.
-          If the label is only in a non-Latin script, transliterate to English.
-          Do NOT translate, paraphrase or rename — copy the English text verbatim.
-          Example: "Fecha de caducidad/ Expiry date" → label = "Expiry date"
-  type  : one of the allowed types below
-
-Allowed types:
-  "text"          → free text: names, places, nationalities, endorsement text
-  "date"          → any date format (DD/MM/YYYY, DD MM YYYY, YYYY-MM-DD, etc.)
-  "alphanumeric"  → document numbers, ID codes, visa numbers, personal identity codes
-  "code"          → short standardized codes: country codes, document type codes,
-                    visa category codes (e.g. MEX, P, S-6)
-  "single_letter" → single character values: sex (M/F), document type letter
-  "entry_count"   → number of permitted entries: SINGLE, DOUBLE, MULTIPLE
-
+Use these exact standard keys whenever the field matches — regardless of language or wording:
+ 
+  Personal:
+    surname           → family name / apellidos / surname
+    given_names       → given names / nombres / first name
+    birth_date        → date of birth / fecha de nacimiento
+    sex               → sex / sexo / gender
+    nationality       → nationality / nacionalidad
+    place_of_birth    → place of birth / lugar de nacimiento
+    personal_id       → any personal identity code (CURP, Aadhaar, PAN, national ID, etc.)
+ 
+  Document:
+    document_number   → document No. / passport No. / visa No. / any document identifier
+    date_of_issue     → date of issue / fecha de expedición / issue date
+    expiry_date       → expiry date / fecha de caducidad / date of expiry / valid until
+    document_type     → document type code / tipo
+    issuing_country   → issuing country code / clave del país / country code
+    visa_type         → visa type / visa category
+    no_of_entries     → number of entries / no. of entries
+    special_endorsement → special endorsement / endorsements / remarks / observaciones
+ 
+For any field that does not match the above, derive the key from the English label:
+snake_case, strip punctuation, lowercase.
+ 
+If a label is bilingual, use ONLY the English portion as label and to derive the key.
+ 
 ──────────────────────────────────────────────
 COMPOUND LABELS
 ──────────────────────────────────────────────
-
-If a single label covers multiple attributes, keep it as ONE field — do not split.
-This includes labels with "and" / "y" connecting two attributes.
-Example: "Surname and Given Name" → ONE field, key="surname_and_given_name", label="Surname and Given Name"
-Example: "Apellidos y Nombres" → ONE field
-Never return separate fields for "Surname" and "Given Name" if they share one label.
-
+ 
+A label combining multiple attributes (e.g. "Surname and Given Name") is ONE field.
+Do NOT split it — use key="surname_and_given_names", label="Surname and Given Name".
+ 
 ──────────────────────────────────────────────
-DOCUMENT NUMBER DETECTION
+DOCUMENT NUMBER
 ──────────────────────────────────────────────
-
-If the document has an explicit labeled field for the document number, use that field.
-Only apply this fallback when NO explicit document number field exists:
-  → if you see a prominent standalone alphanumeric code in a header or corner area
-    with no label, it is most likely the document number — include it under "document"
-    with type "alphanumeric" and use the code itself as the label.
-If a Machine Readable Zone (MRZ) is present, you may read it to confirm
-or recover the document number if missing, but do NOT include MRZ lines as fields.
-
+ 
+If the document number has no explicit label but appears as a prominent standalone
+alphanumeric code (header or corner area), include it as document_number.
+If MRZ is present, read it to confirm or recover the document_number if not found
+elsewhere — but do NOT include the MRZ lines themselves as fields.
+ 
 ──────────────────────────────────────────────
-ALWAYS IGNORE — never include as fields
+ALWAYS IGNORE
 ──────────────────────────────────────────────
-
-  - Issuing country or government name headers
-    (e.g. "ESTADOS UNIDOS MEXICANOS", "REPUBLIC OF INDIA", "GOVERNMENT OF...")
-  - Document type watermarks printed as background ("VISA", "PASSPORT", "ID")
-  - Operational instructions printed on the document
-    (e.g. "REGISTRATION WITHIN 14 DAYS", "NOT VALID FOR PROHIBITED AREAS",
-    "CHANGE OF PURPOSE NOT ALLOWED", "VALID ONLY FOR...", any restriction notice)
-  - Signature line labels ("Holder's Signature", "Firma del Titular", etc.)
-  - Authority labels and everything associated with them: any label containing
-    "Authority", "Autoridad", "Issuing Officer", "Signed by" or similar,
-    AND any field whose visible value is a person's full name acting in official
-    capacity or the name of a government office / department
-    (e.g. "NAIA ANALEAH MENDEZ GOU", "OF. PASAPORTES YUCATAN") — ignore both
-    the label and its value entirely
-  - Standalone serial numbers that are clearly internal printing codes, not document IDs
-
+ 
+  - Country / government name headers
+  - Document type watermarks (background text)
+  - Operational instructions and restriction notices
+  - Signature labels and holder signature areas
+  - Authority labels and their values (officer names, office names)
+  - Internal serial / printing codes
+ 
 {document_specific}
-
+ 
 ──────────────────────────────────────────────
-OUTPUT FORMAT
+OUTPUT
 ──────────────────────────────────────────────
-
-Return ONLY a valid JSON object, no explanation, no markdown:
+ 
+Return ONLY valid JSON, no explanation, no markdown:
 {{
   "personal": [
     {{"key": "surname", "label": "Surname", "type": "text"}},
-    {{"key": "date_of_birth", "label": "Date of birth", "type": "date"}}
+    {{"key": "birth_date", "label": "Date of birth", "type": "date"}}
   ],
   "document": [
-    {{"key": "passport_no", "label": "Passport No", "type": "alphanumeric"}},
+    {{"key": "document_number", "label": "Passport No.", "type": "alphanumeric"}},
     {{"key": "expiry_date", "label": "Expiry date", "type": "date"}}
   ]
 }}
+ 
+Allowed types: "text", "date", "alphanumeric", "code", "single_letter", "entry_count"
 """
 
 _DOC_SPECIFIC_PASSPORT = """\
@@ -133,9 +115,7 @@ Date of issue and date of expiry are DOCUMENT fields
 """
 
 _DOC_SPECIFIC_GENERIC = """\
-Identify every label+value pair where the label describes a data field
-and the value contains information specific to the document holder or the document itself.
-Bilingual labels (same field in two languages) count as ONE field — prefer English.
+Bilingual labels (same field in two languages) count as ONE field — use English portion.
 """
 
 # Con Specific Prompts

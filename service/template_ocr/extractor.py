@@ -95,17 +95,45 @@ def _call_llm(
     }
 
 
+# Keys que deben coincidir exactamente con los campos para validar el MRZ
+_MRZ_KEYS = {
+    "surname", "given_names", "givennames", "givenname",
+    "birth_date", "birthdate", "dateofbirth",
+    "expiry_date", "expirydate", "dateofexpiry",
+    "document_number", "documentnumber", "docnumber",
+    "sex", "country", "nationality",
+}
+
+# Mapeo al key estandar correcto
+_MRZ_KEY_MAP = {
+    "givennames":     "given_names",
+    "givenname":      "given_names",
+    "birthdate":      "birth_date",
+    "dateofbirth":    "birth_date",
+    "expirydate":     "expiry_date",
+    "dateofexpiry":   "expiry_date",
+    "documentnumber": "document_number",
+    "docnumber":      "document_number",
+}
+
 def _normalize_category(raw: list, category: str, used_keys: set) -> list[dict]:
-    """Limpia y normaliza una lista de fields de una categoría."""
     result = []
     for f in raw:
         label = str(f.get("label", "")).strip()
         ftype = str(f.get("type", "text")).strip()
         if not label:
             continue
-        llm_key  = str(f.get("key", "")).strip()
-        base_key = _slugify(llm_key if llm_key else label)
-        key      = _unique_key(base_key, used_keys)
+
+        llm_key = str(f.get("key", "")).strip().lower()
+
+        if llm_key in _MRZ_KEYS:
+            # Campo MRZ — aplicar normalización estricta al key
+            base_key = _MRZ_KEY_MAP.get(llm_key, llm_key)
+        else:
+            # Campo normal — derivar key del label
+            base_key = _slugify(label)
+
+        key = _unique_key(base_key, used_keys)
         used_keys.add(key)
         result.append({"key": key, "label": label, "type": ftype})
     return result
@@ -115,6 +143,7 @@ def extract_template(
     img_path: str | Path,
     config: "TemplateConfig | None" = None,
     document_type: str = "generic",
+    country: str | None = None,
 ) -> dict:
     """
     Identifica los campos de un documento a partir de su imagen

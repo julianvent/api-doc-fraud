@@ -25,9 +25,10 @@ async def upload_template(
     img: Annotated[UploadFile, File(description="The template image")],
     document_type: Annotated[str, Form()],
     document_name: Annotated[str, Form()],
+    country: Annotated[str, Form()] = None,
 ):
     template = fraud_controller.upload_template(
-        img=img, document_name=document_name, document_type=document_type
+        img=img, document_type=document_type, country=country, document_name=document_name
     )
 
     return template

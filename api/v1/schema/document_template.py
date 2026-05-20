@@ -8,7 +8,8 @@ class TemplateField(BaseModel):
 
 
 class BaseDocumentTemplateResponse(BaseModel):
-    document_name: str
     document_type: str
+    country      : str | None = None
+    document_name: str
     img_path     : str
     fields       : dict[str, list[TemplateField]]  # {"personal": [...], "document": [...]}

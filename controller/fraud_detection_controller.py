@@ -98,13 +98,14 @@ def verify(files: list[UploadFile], id: str) -> BaseVerifyResponse:
 
 
 def upload_template(
-    img: UploadFile, document_name: str, document_type: str
+    img: UploadFile, document_name: str, document_type: str, country: str | None = None
 ) -> DocumentTemplate:
     path = upload_file(file=img, path=TEMPLATE_PATH, id="test")
 
     new_template = template_ocr.upload(
-        document_name=document_name,
         document_type=document_type,
+        country=country,
+        document_name=document_name,
         img_path=path.as_posix(),
     )
 

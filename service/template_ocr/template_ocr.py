@@ -9,6 +9,7 @@ def upload(
     document_name: str,
     document_type: str,
     img_path: str,
+    country: str | None = None,
 ) -> DocumentTemplate:
     """
     Identifica los campos de un documento y los persiste en la base de datos
@@ -24,7 +25,7 @@ def upload(
     """
     config = TemplateConfig()
 
-    result   = extract_template(img_path, config=config, document_type=document_type)
+    result   = extract_template(img_path, config=config, document_type=document_type, country=country)
     personal = result["personal"]
     document = result["document"]
 
@@ -32,8 +33,9 @@ def upload(
           f"({len(personal)} personal, {len(document)} document)")
 
     template = create_template(
-        document_name=document_name,
         document_type=document_type,
+        country=country,
+        document_name=document_name,
         img_path=str(img_path),
         fields={"personal": personal, "document": document},
     )
