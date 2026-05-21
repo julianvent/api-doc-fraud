@@ -28,8 +28,9 @@ KEY NORMALIZATION
 Use these exact standard keys whenever the field matches — regardless of language or wording:
  
   Personal:
-    surname           → family name / apellidos / surname
-    given_names       → given names / nombres / first name
+    surname           → if surname / family name / apellidos appears as a separate field
+    given_names       → if given names / nombres / first name appear as a separate field
+    surname_and_given_names → if both appear combined in a single field label
     birth_date        → date of birth / fecha de nacimiento
     sex               → sex / sexo / gender
     nationality       → nationality / nacionalidad
