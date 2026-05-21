@@ -58,7 +58,7 @@
                 "type": "code"
             },
             {
-                "key": "country",
+                "key": "issuing_country_code",
                 "label": "Issuing country code",
                 "type": "code"
             }

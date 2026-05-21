@@ -62,7 +62,7 @@ def _call_llm(
                 "prompt":      prompt,
                 "images":      [encoded_img],
                 "stream":      False,
-                "temperature": 0,
+                "temperature": 0.0,
             },
             timeout=180,
         )
@@ -98,7 +98,7 @@ def _call_llm(
 # Keys que deben coincidir exactamente con los campos para validar el MRZ
 _MRZ_KEYS = {
     "surname", "given_names", "givennames", "givenname",
-    "birth_date", "birthdate", "dateofbirth",
+    "birth_date", "birthdate", "dateofbirth", "date_of_birth",
     "expiry_date", "expirydate", "dateofexpiry",
     "document_number", "documentnumber", "docnumber",
     "sex", "country", "nationality",
@@ -110,6 +110,7 @@ _MRZ_KEY_MAP = {
     "givenname":      "given_names",
     "birthdate":      "birth_date",
     "dateofbirth":    "birth_date",
+    "date_of_birth":    "birth_date",
     "expirydate":     "expiry_date",
     "dateofexpiry":   "expiry_date",
     "documentnumber": "document_number",

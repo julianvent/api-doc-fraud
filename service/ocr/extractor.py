@@ -1,10 +1,10 @@
 import json
 import re
 
-from .agent.agent import _build_fields_guide, _iter_template_fields
 from .backends import VisionBackend
 from .models import PipelineOutput
 from .normalizer import normalize_fields
+from .templates import build_fields_guide, iter_template_fields
 
 
 _VLM_EXTRACT_PROMPT = """You are extracting structured data from an identity document image.
@@ -35,6 +35,44 @@ Look at the document and identify every visible label-value pair.
 - Example: label "Date of Birth" with document text "08 March 1995"
   → key: "date_of_birth" (underscores OK in key)
   → value: "08 March 1995" (spaces preserved, NO underscores)
+
+## Multi-word names (CRITICAL — applies to surname, given_names, apellidos, nombres, etc.)
+Many naming conventions use multiple words or even multiple lines for names. You MUST capture the FULL name, not just the first word or first line.
+
+### Surname / Apellidos — TWO surnames is the NORM in many cultures
+- **Hispanic / Portuguese / Brazilian**: people have TWO surnames (paternal + maternal). It is NORMAL and EXPECTED to see two surnames under one label.
+- **Even if the label is singular ("Surname", "Apellido", "Nom")**, the VALUE on the document very often contains TWO surnames.
+- Example layout 1 — both surnames on the same line:
+  ```
+  Surname: GARCIA LOPEZ
+  ```
+  → value = "GARCIA LOPEZ" (BOTH words, not just "GARCIA")
+- Example layout 2 — both surnames on adjacent lines under the same label:
+  ```
+  Apellidos
+  GARCIA
+  LOPEZ
+  ```
+  → value = "GARCIA LOPEZ" (JOIN both lines with a single space, as a SINGLE value)
+- Example layout 3 — two-column form with both surnames stacked under one column header:
+  ```
+  Apellidos       Nombres
+  GARCIA          JUAN
+  LOPEZ           CARLOS
+  ```
+  → surname = "GARCIA LOPEZ", given_names = "JUAN CARLOS"
+
+**For surname / apellidos specifically: if you see TWO words or lines that look like surnames under the same label, ALWAYS include both as one value.** Never return just one.
+
+### Given names / Nombres — also often multiple
+- Compound given names are common: "JUAN CARLOS", "MARIA DEL CARMEN", "ANA SOFIA".
+- Multiple given names may span lines too — join them with single spaces into one value.
+
+### Universal rules for name fields
+- Capture EVERY word that belongs to the name, joined by single spaces in their original order.
+- DO NOT truncate to one word.
+- DO NOT split a multi-word name across multiple keys.
+- For names, joining multiple lines INTO one value is the CORRECT behavior (overrides the "never combine lines" rule which applies to non-name fields like document_number, dates, etc.).
 
 ## Prominent standalone data (conservative capture)
 Some documents have prominent data without an explicit label (e.g. a visa number "VJ9188237" printed at the top corner of a visa, an ID at the top of a passport). You MAY emit such data when ALL of these are true:
@@ -80,8 +118,8 @@ def _mrz_to_dict(mrz) -> dict:
         "surname"        : mrz.surname,
         "given_names"    : mrz.given_names,
         "country"        : mrz.country,
-        "date_of_birth"  : mrz.birth_date,
-        "date_of_expiry" : mrz.expiry_date,
+        "birth_date"  : mrz.birth_date,
+        "expiry_date" : mrz.expiry_date,
         "document_number": mrz.number,
         "sex"            : mrz.sex,
     })
@@ -89,6 +127,15 @@ def _mrz_to_dict(mrz) -> dict:
 
 def _norm(value) -> str:
     return str(value).strip().upper().replace(" ", "") if value else ""
+
+
+_CONFIDENCE_SCORE = {"high": 0.9, "medium": 0.6, "low": 0.3}
+
+
+def _confidence_to_score(confidence) -> float:
+    if not confidence:
+        return 0.0
+    return _CONFIDENCE_SCORE.get(str(confidence).strip().lower(), 0.0)
 
 
 def _compare_fields_vs_mrz(fields: dict, output: PipelineOutput) -> tuple[list[dict], list[str]]:
@@ -147,7 +194,7 @@ def extract_with_vision(image_path: str,
     prompt = _VLM_EXTRACT_PROMPT
 
     if template is not None:
-        fields_guide = _build_fields_guide(template)
+        fields_guide = build_fields_guide(template)
         prompt = f"""{prompt}
 
 ## Required fields (PASS 1 — use EXACTLY these keys)
@@ -195,7 +242,7 @@ The OCR engine extracted this layout from the same image. Use the image as the p
     extras: dict = {}
 
     if template is not None:
-        template_keys = [f.get("key") for f in _iter_template_fields(template) if f.get("key")]
+        template_keys = [f.get("key") for f in iter_template_fields(template) if f.get("key")]
         extras        = {k: v for k, v in agent_fields.items() if k not in template_keys and v}
         agent_fields  = {k: v for k, v in agent_fields.items() if k in template_keys}
         missing       = [k for k in template_keys if not agent_fields.get(k)]
@@ -218,6 +265,7 @@ The OCR engine extracted this layout from the same image. Use the image as the p
         print(f"[OCR] inconsistencies: {len(inconsistencies)}")
 
     verdict = "suspicious" if inconsistencies else "genuine"
+    confidence_score = _confidence_to_score(parsed.get("confidence"))
 
     return {
         "agent_fields": {
@@ -249,6 +297,6 @@ The OCR engine extracted this layout from the same image. Use the image as the p
             "verdict"        : verdict,
             "confidence"     : parsed.get("confidence"),
             "source"         : output.source,
-            "confidence_avg" : output.confidence_avg
+            "confidence_avg" : confidence_score
         }
     }
