@@ -116,7 +116,7 @@ with tab_verify:
                             st.divider()
 
                         st.markdown("**Raw response**")
-                        st.json(body, expanded=False)
+                        st.json(body, expanded=True)
 
 # --- /v1/template ---->
 with tab_template:
@@ -179,4 +179,4 @@ with tab_template:
                             st.divider()
 
                         st.markdown("**Raw response**")
-                        st.json(body, expanded=False)
+                        st.json(body, expanded=True)
