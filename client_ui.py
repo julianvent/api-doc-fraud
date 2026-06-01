@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import time
+
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 DEFAULT_BASE_URL = "http://localhost:8000"
 REQUEST_TIMEOUT = 600  # seconds — verify pipeline can be slow on first call
@@ -11,6 +14,93 @@ VERDICT_COLORS = {
     "REVIEW": "orange",
     "REJECT": "red",
 }
+
+PIPELINE_STAGES = ["metadata", "tampering", "preprocessor", "ocr", "policy"]
+
+STAGE_ICONS = {
+    "pending": ":material/radio_button_unchecked:",
+    "running": ":material/sync:",
+    "done":    ":material/check_circle:",
+    "failed":  ":material/error:",
+}
+
+STAGE_COLORS = {
+    "pending": "gray",
+    "running": "blue",
+    "done":    "green",
+    "failed":  "red",
+}
+
+REPLAY_STEP_SECONDS = 0.25
+
+
+def _format_ms(ms: int | float) -> str:
+    return f"{ms / 1000:.2f} s" if ms >= 1000 else f"{int(ms)} ms"
+
+
+def render_pipeline(states: dict[str, str], timings: dict[str, int]) -> str:
+    """Build a single-line markdown pipeline using Material Symbols."""
+    parts: list[str] = []
+    for stage in PIPELINE_STAGES:
+        state = states.get(stage, "pending")
+        color = STAGE_COLORS[state]
+        icon = STAGE_ICONS[state]
+        timing = timings.get(stage)
+        timing_md = f" `{_format_ms(timing)}`" if state == "done" and timing is not None else ""
+        parts.append(f"{icon} :{color}[**{stage}**]{timing_md}")
+    return "  →  ".join(parts)
+
+
+def replay_pipeline(placeholder, elapsed: dict[str, int]) -> None:
+    """Animate the pipeline by marking each stage done in order, with real timings."""
+    states: dict[str, str] = {s: "pending" for s in PIPELINE_STAGES}
+    timings: dict[str, int] = {}
+
+    for stage in PIPELINE_STAGES:
+        if stage in elapsed:
+            states[stage] = "done"
+            timings[stage] = int(elapsed[stage])
+        elif stage == "policy":
+            states[stage] = "done"
+        else:
+            states[stage] = "failed"
+            placeholder.markdown(render_pipeline(states, timings))
+            return
+        placeholder.markdown(render_pipeline(states, timings))
+        time.sleep(REPLAY_STEP_SECONDS)
+
+
+def render_live_timer(slot, label: str = "Time:") -> None:
+    """Render a JS-driven timer inside `slot`. Ticks in the browser while Python
+    is blocked on the POST; replaced with render_frozen_timer when done."""
+    with slot:
+        components.html(
+            f"""
+            <div style="font-family: ui-monospace, monospace; font-size: 1rem;">
+                <span style="color: #6b7280;">{label}</span>
+                <span id="t" style="color: #1f6feb; font-weight: 600;">0.0</span>
+                <span style="color: #6b7280;">s</span>
+            </div>
+            <script>
+                const start = Date.now();
+                const el = document.getElementById('t');
+                setInterval(() => {{
+                    el.textContent = ((Date.now() - start) / 1000).toFixed(1);
+                }}, 100);
+            </script>
+            """,
+            height=32,
+        )
+
+
+def render_frozen_timer(slot, elapsed_seconds: float, label: str = "Time:") -> None:
+    slot.markdown(
+        f"<div style='font-family: ui-monospace, monospace; font-size: 1rem;'>"
+        f"<span style='color: #6b7280;'>{label}</span> "
+        f"<span style='color: #16a34a; font-weight: 600;'>{elapsed_seconds:.1f}</span> "
+        f"<span style='color: #6b7280;'>s</span></div>",
+        unsafe_allow_html=True,
+    )
 
 
 st.set_page_config(page_title="Fraud Detection Tester", layout="wide")
@@ -85,19 +175,39 @@ with tab_verify:
                 if doc_type.strip():
                     data["document_type"] = doc_type
 
-                with st.spinner("Calling /v1/verify…"):
+                timer_slot = st.empty()
+                render_live_timer(timer_slot)
+
+                pipeline_placeholder = st.empty()
+                pipeline_placeholder.markdown(
+                    render_pipeline({s: "running" for s in PIPELINE_STAGES}, {})
+                )
+
+                with st.status("Processing document through pipeline...", expanded=False):
                     resp = post_multipart(f"{base_url}/v1/verify", files=files, data=data)
 
-                if resp is not None:
+                if resp is None:
+                    timer_slot.empty()
+                    pipeline_placeholder.markdown(
+                        render_pipeline({s: "failed" for s in PIPELINE_STAGES}, {})
+                    )
+                else:
+                    render_frozen_timer(timer_slot, resp.elapsed.total_seconds())
                     render_meta(resp.status_code, resp.elapsed.total_seconds() * 1000)
 
                     try:
                         body = resp.json()
                     except ValueError:
+                        pipeline_placeholder.markdown(
+                            render_pipeline({s: "failed" for s in PIPELINE_STAGES}, {})
+                        )
                         st.error("Response is not valid JSON.")
                         st.code(resp.text)
                     else:
                         if resp.ok and isinstance(body, dict):
+                            elapsed = (body.get("execution") or {}).get("elapsed_ms_per_stage") or {}
+                            replay_pipeline(pipeline_placeholder, elapsed)
+
                             verdict = str(body.get("verdict", "—"))
                             color = VERDICT_COLORS.get(verdict.upper(), "gray")
                             st.markdown(f"### Verdict: :{color}[**{verdict}**]")
@@ -114,6 +224,10 @@ with tab_verify:
                                 st.caption("_(none)_")
 
                             st.divider()
+                        else:
+                            pipeline_placeholder.markdown(
+                                render_pipeline({s: "failed" for s in PIPELINE_STAGES}, {})
+                            )
 
                         st.markdown("**Raw response**")
                         st.json(body, expanded=True)
@@ -149,10 +263,16 @@ with tab_template:
                 if tpl_country.strip():
                     data["country"] = tpl_country
 
-                with st.spinner("Calling /v1/template…"):
+                timer_slot_tpl = st.empty()
+                render_live_timer(timer_slot_tpl)
+
+                with st.status("Extracting template fields...", expanded=False):
                     resp = post_multipart(f"{base_url}/v1/template", files=files, data=data)
 
-                if resp is not None:
+                if resp is None:
+                    timer_slot_tpl.empty()
+                else:
+                    render_frozen_timer(timer_slot_tpl, resp.elapsed.total_seconds())
                     render_meta(resp.status_code, resp.elapsed.total_seconds() * 1000)
 
                     try:
