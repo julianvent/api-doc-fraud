@@ -1,14 +1,16 @@
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Optional
 
 from service.ocr.backends import OllamaVisionBackend
 from service.ocr.identifier import identify
 from service.ocr.extractor import extract_with_vision
 
+from . import matching
 from .layout import build_spatial_layout
-from .models import Config, PipelineOutput
+from .models import Config, PipelineOutput, TextLine
 from .engine import OCREngine, PaddleOCRAdapter, DotsOCRAdapter, DolphinOCRAdapter, load_image
 from .mrz import detect
+from .preclassifier import classify as preclassify, PreClassResult
 from .templates import iter_template_fields, load_template
 
 
@@ -72,6 +74,88 @@ def _build_pipeline_output(document_type, lines, mrz, confidence_avg) -> Pipelin
     )
 
 
+def _document_type_from_preclass(preclass: PreClassResult) -> str | None:
+    if preclass.doc_family != "identity_mrz":
+        return None
+    mapping = {"TD3": "passport", "MRV-A": "visa", "MRV-B": "visa"}
+    return mapping.get(preclass.mrz_type)
+
+
+def _try_vector_match(
+    preclass: PreClassResult,
+    lines: list[TextLine],
+    config: Config,
+) -> Optional[dict]:
+    """
+    Returns {"document_type", "template_id", "score"} on hit, None on miss / disabled / error.
+    """
+    if config.disable_vector_match or not matching.is_available():
+        return None
+
+    query_text = matching.serialize_for_query(preclass, lines)
+    vector     = matching.embed(query_text, config.embedding_url, config.embedding_model)
+    if vector is None:
+        return None
+
+    filters = {
+        "doc_family":  preclass.doc_family if preclass.doc_family != "unknown" else None,
+        "mrz_type":    preclass.mrz_type,
+        "country_iso": preclass.country_iso,
+    }
+    hits = matching.search(
+        config.qdrant_url,
+        config.qdrant_collection,
+        vector,
+        filters         = filters,
+        limit           = 1,
+        score_threshold = config.match_threshold,
+    )
+    if not hits:
+        print(f"[OCR] qdrant: no match above threshold={config.match_threshold}")
+        return None
+
+    hit      = hits[0]
+    doc_type = hit["payload"].get("document_type")
+    if not doc_type:
+        return None
+
+    print(
+        f"[OCR] qdrant match: document_type='{doc_type}' "
+        f"score={hit['score']:.3f} template_id={hit.get('template_id')}"
+    )
+    return {
+        "document_type": doc_type,
+        "template_id":   hit.get("template_id"),
+        "score":         hit["score"],
+    }
+
+
+def _resolve_document_type(
+    document_type: Optional[str],
+    preclass: PreClassResult,
+    image_path: Path,
+    lines: list[TextLine],
+    config: Config,
+    vision_backend: OllamaVisionBackend,
+) -> tuple[str, str, Optional[dict]]:
+    """
+    Returns (document_type, source, qdrant_hit_or_None).
+    source in {"caller", "qdrant", "preclass_shortcut", "vlm_identify"}.
+    """
+    if document_type:
+        return document_type, "caller", None
+
+    qdrant_hit = _try_vector_match(preclass, lines, config)
+    if qdrant_hit:
+        return qdrant_hit["document_type"], "qdrant", qdrant_hit
+
+    inferred = _document_type_from_preclass(preclass)
+    if inferred is not None:
+        return inferred, "preclass_shortcut", None
+
+    return identify(str(image_path), vision_backend), "vlm_identify", None
+
+
 def _run(image_path: str | Path,
          config: Config,
          vision_backend: OllamaVisionBackend,
@@ -84,19 +168,19 @@ def _run(image_path: str | Path,
     engine = _get_engine(config)
     print(f"[OCR] image loaded, engine={config.ocr_engine}")
 
-    if document_type:
-        print(f"[OCR] document_type='{document_type}' provided by caller — skipping VLM identify")
-        lines = engine.extract(image)
-    else:
-        print(f"[OCR] no document_type provided — running VLM identify and OCR in parallel")
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            id_future  = ex.submit(identify, str(image_path), vision_backend)
-            ocr_future = ex.submit(engine.extract, image)
-            document_type = id_future.result()
-            lines         = ocr_future.result()
-        print(f"[OCR] VLM identified document_type='{document_type}'")
-
+    lines = engine.extract(image)
     print(f"[OCR] OCR extracted {len(lines)} lines")
+
+    preclass = preclassify(image, lines)
+    print(
+        f"[OCR] preclassifier: family={preclass.doc_family} mrz_type={preclass.mrz_type} "
+        f"country={preclass.country_iso} confidence={preclass.confidence:.2f}"
+    )
+
+    document_type, match_source, qdrant_hit = _resolve_document_type(
+        document_type, preclass, image_path, lines, config, vision_backend
+    )
+    print(f"[OCR] document_type='{document_type}' resolved via source='{match_source}'")
 
     if not lines:
         print(f"[OCR] no text extracted — aborting")
@@ -136,6 +220,20 @@ def _run(image_path: str | Path,
 
     agent_fields = result.get("result", {}).get("fields", {})
     print(f"[OCR] final extracted fields: {len(agent_fields)} → {list(agent_fields.keys())}")
+
+    if isinstance(result, dict):
+        result["preclass"] = {
+            "doc_family":   preclass.doc_family,
+            "country_iso":  preclass.country_iso,
+            "mrz_type":     preclass.mrz_type,
+            "has_face":     preclass.has_face,
+            "aspect_class": preclass.aspect_class,
+            "confidence":   preclass.confidence,
+        }
+        result["match_source"] = match_source
+        if qdrant_hit:
+            result["matched_template_id"] = qdrant_hit["template_id"]
+            result["match_score_vector"] = qdrant_hit["score"]
 
     print(f"[OCR] === done ===\n")
     return result
