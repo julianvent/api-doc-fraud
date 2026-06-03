@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "document_type": "pan_card",
+  "document_name": "pancard",
+  "country": "IND",
+  "country_iso": "IND",
+  "doc_family": "identity_card",
+  "mrz_type": null,
+  "img_path": "template/test/Gemini_Generated_Image_33tup433tup433tu.png",
+  "fingerprint": {
+    "layout_desc": "ID card-type document, QR code right, blue color, photo top-left.",
+    "anchors": [
+      "INCOME TAX DEPARTMENT",
+      "Permanent Account Number Card",
+      "GOVT. OF INDIA"
+    ]
+  },
+  "fields": [
+    {
+      "key": "surname",
+      "label": "Surname",
+      "type": "text",
+      "category": "personal"
+    },
+    {
+      "key": "given_names",
+      "label": "Given names",
+      "type": "text",
+      "category": "personal"
+    },
+    {
+      "key": "birth_date",
+      "label": "Date of birth",
+      "type": "date",
+      "category": "personal"
+    },
+    {
+      "key": "document_number",
+      "label": "Permanent Account Number Card",
+      "type": "alphanumeric",
+      "category": "document"
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry date",
+      "type": "date",
+      "category": "document"
+    }
+  ],
+  "field_rules": {
+    "document_number": {
+      "regex": "^[A-Z][0-9]{8}$"
+    },
+    "expiry_date": {
+      "type": "date",
+      "must_be_future": true
+    }
+  },
+  "qr_config": {
+    "present": true,
+    "signed": false,
+    "format": "qr",
+    "fields_map": {}
+  }
+}

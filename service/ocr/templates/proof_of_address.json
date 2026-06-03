@@ -1,0 +1,49 @@
+{
+  "schema_version": 2,
+  "document_type": "proof_of_address",
+  "document_name": "electricity",
+  "country": "MEX",
+  "country_iso": "MEX",
+  "doc_family": "identity_photo",
+  "mrz_type": null,
+  "img_path": "template/test/CFE.png",
+  "fingerprint": {
+    "layout_desc": "Utility bill document, no MRZ, white background, no photo, no distinctive structural elements.",
+    "anchors": [
+      "CFE",
+      "Comisión Federal de Electricidad",
+      "RIO NAZAS"
+    ]
+  },
+  "fields": [
+    {
+      "key": "surname",
+      "label": "Surname",
+      "type": "text",
+      "category": "personal"
+    },
+    {
+      "key": "given_names",
+      "label": "Given names",
+      "type": "text",
+      "category": "personal"
+    },
+    {
+      "key": "document_number",
+      "label": "Document No.",
+      "type": "alphanumeric",
+      "category": "document"
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry date",
+      "type": "date",
+      "category": "document"
+    }
+  ],
+  "field_rules": {},
+  "qr_config": {
+    "present": false,
+    "signed": false
+  }
+}

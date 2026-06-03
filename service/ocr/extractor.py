@@ -5,6 +5,7 @@ from .backends import VisionBackend
 from .models import PipelineOutput
 from .normalizer import normalize_fields
 from .templates import build_fields_guide, iter_template_fields
+from .validation import apply_rules
 
 
 _VLM_EXTRACT_PROMPT = """You are extracting structured data from an identity document image.
@@ -242,7 +243,7 @@ The OCR engine extracted this layout from the same image. Use the image as the p
     extras: dict = {}
 
     if template is not None:
-        template_keys = [f.get("key") for f in iter_template_fields(template) if f.get("key")]
+        template_keys = [f.key for f in iter_template_fields(template) if f.key]
         extras        = {k: v for k, v in agent_fields.items() if k not in template_keys and v}
         agent_fields  = {k: v for k, v in agent_fields.items() if k in template_keys}
         missing       = [k for k in template_keys if not agent_fields.get(k)]
@@ -261,6 +262,13 @@ The OCR engine extracted this layout from the same image. Use the image as the p
     flags.extend(mrz_flags)
     if mrz_flags:
         print(f"[OCR] MRZ flags: {mrz_flags}")
+
+    if template is not None:
+        rule_issues = apply_rules(agent_fields, template.field_rules)
+        if rule_issues:
+            inconsistencies.extend(rule_issues)
+            print(f"[RULES] {len(rule_issues)} field_rule violations")
+
     if inconsistencies:
         print(f"[OCR] inconsistencies: {len(inconsistencies)}")
 

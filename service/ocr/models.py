@@ -36,6 +36,26 @@ class Config:
         default_factory=lambda: os.getenv("DOLPHIN_REPO_PATH", "service/ocr/Dolphin")
     )
 
+    # Vector matching (Qdrant + Ollama embeddings)
+    qdrant_url: str = field(
+        default_factory=lambda: os.getenv("QDRANT_URL", "http://localhost:6333")
+    )
+    qdrant_collection: str = field(
+        default_factory=lambda: os.getenv("QDRANT_COLLECTION", "document_templates")
+    )
+    embedding_url: str = field(
+        default_factory=lambda: os.getenv("OLLAMA_EMBED_URL", "http://localhost:11434/api/embeddings")
+    )
+    embedding_model: str = field(
+        default_factory=lambda: os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")
+    )
+    match_threshold: float = field(
+        default_factory=lambda: float(os.getenv("MATCH_THRESHOLD", "0.75"))
+    )
+    disable_vector_match: bool = field(
+        default_factory=lambda: os.getenv("DISABLE_VECTOR_MATCH", "0") == "1"
+    )
+
 
 @dataclass
 class TextLine:
