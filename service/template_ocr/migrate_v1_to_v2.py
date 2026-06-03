@@ -50,12 +50,13 @@ def _resolve_img_path(raw_img_path: Optional[str], repo_root: Path) -> Optional[
 
 def _preclassify(img_path: Path):
     try:
-        from service.ocr.engine import PaddleOCRAdapter, load_image
+        from service.ocr.engine import load_image
         from service.ocr.models import Config
+        from service.ocr.ocr import _get_engine
         from service.ocr.preclassifier import classify
 
         cfg    = Config()
-        engine = PaddleOCRAdapter(cfg)
+        engine = _get_engine(cfg)
         image  = load_image(img_path)
         lines  = engine.extract(image)
         return classify(image, lines)

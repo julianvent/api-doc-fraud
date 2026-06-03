@@ -1,3 +1,5 @@
+from datetime import date
+
 from pydantic import BaseModel
 
 
@@ -9,7 +11,9 @@ class TemplateField(BaseModel):
 
 class BaseDocumentTemplateResponse(BaseModel):
     document_type: str
-    country      : str | None = None
+    country      : str
+    state        : str | None = None
+    edition      : date
     document_name: str
     img_path     : str
     fields       : dict[str, list[TemplateField]]  # {"personal": [...], "document": [...]}
