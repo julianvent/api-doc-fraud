@@ -248,20 +248,32 @@ with tab_template:
             )
             tpl_doc_type = st.text_input("document_type", placeholder="e.g. passport")
             tpl_doc_name = st.text_input("document_name", placeholder="e.g. passport_us")
-            tpl_country = st.text_input("country (optional)", placeholder="e.g. US")
+            tpl_country = st.text_input(
+                "country code",
+                placeholder="e.g. MEX, USA, UK",
+                max_chars=5,
+                help="Country code, max 3 characters.",
+            )
+            tpl_state = st.text_input("state (optional)", placeholder="e.g. Jalisco")
+            tpl_edition = st.date_input("edition")
             submit_tpl = st.form_submit_button("Send", type="primary", use_container_width=True)
 
     with col_result:
         if submit_tpl:
             if img is None:
                 st.warning("Upload a template image.")
-            elif not tpl_doc_type.strip() or not tpl_doc_name.strip():
-                st.warning("`document_type` and `document_name` are required.")
+            elif not tpl_doc_type.strip() or not tpl_doc_name.strip() or not tpl_country.strip() or tpl_edition is None:
+                st.warning("`document_type`, `document_name`, `country` and `edition` are required.")
             else:
                 files = [("img", (img.name, img.getvalue(), img.type or "application/octet-stream"))]
-                data = {"document_type": tpl_doc_type, "document_name": tpl_doc_name}
-                if tpl_country.strip():
-                    data["country"] = tpl_country
+                data = {
+                    "document_type": tpl_doc_type,
+                    "document_name": tpl_doc_name,
+                    "country": tpl_country,
+                    "edition": tpl_edition.isoformat(),
+                }
+                if tpl_state.strip():
+                    data["state"] = tpl_state
 
                 timer_slot_tpl = st.empty()
                 render_live_timer(timer_slot_tpl)
@@ -286,6 +298,10 @@ with tab_template:
                             m1.metric("document_name", body.get("document_name", "—"))
                             m2.metric("document_type", body.get("document_type", "—"))
                             m3.metric("country", body.get("country") or "—")
+
+                            m4, m5 = st.columns(2)
+                            m4.metric("state", body.get("state") or "—")
+                            m5.metric("edition", body.get("edition") or "—")
 
                             st.markdown(f"**img_path** `{body.get('img_path', '—')}`")
 

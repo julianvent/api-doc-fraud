@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from typing import Any, Optional
+from datetime import date
 
 from model.document_template import DocumentTemplate
 from repository.document_template import create_template
@@ -12,12 +13,13 @@ from .model import TemplateConfig
 def _preclassify_image(img_path: str):
     """OCR + preclassifier over the template image to recover doc_family / mrz_type / country_iso."""
     try:
-        from service.ocr.engine import PaddleOCRAdapter, load_image
+        from service.ocr.engine import load_image
         from service.ocr.models import Config as OcrConfig
+        from service.ocr.ocr import _get_engine
         from service.ocr.preclassifier import classify
 
         cfg    = OcrConfig()
-        engine = PaddleOCRAdapter(cfg)
+        engine = _get_engine(cfg)
         image  = load_image(Path(img_path))
         lines  = engine.extract(image)
         return classify(image, lines)
@@ -135,7 +137,9 @@ def upload(
     document_name: str,
     document_type: str,
     img_path: str,
-    country: str | None = None,
+    country: str,
+    edition: date,
+    state: str | None = None,
 ) -> DocumentTemplate:
     """
     Genera template enriquecida (v2): campos + fingerprint + validators + qr_config.
@@ -157,7 +161,21 @@ def upload(
         f"[template_ocr] {document_type} → {result['n_fields']} campos "
         f"({len(personal)} personal, {len(document)} document); "
         f"fingerprint.anchors={len((fingerprint or {}).get('anchors') or [])}; "
-        f"validators={len(validators or {})}"
+        f"validators={len(validators or {})}")
+
+    # TODO(step 8 — out of current refactor scope): once model/document_template.py
+    # and repository/document_template.create_template gain the v2 columns
+    # (country_iso, doc_family, mrz_type, fingerprint, field_rules, qr_config,
+    # schema_version, embedding_id), pass them here as kwargs. Today the disk JSON
+    # and Qdrant carry the enriched data; the DB row keeps the v1 shape (+ state/edition).
+    template = create_template(
+        document_type=document_type,
+        country=country,
+        state=state,
+        edition=edition,
+        document_name=document_name,
+        img_path=str(img_path),
+        fields={"personal": personal, "document": document},
     )
 
     preclass  = _preclassify_image(img_path)
@@ -177,19 +195,6 @@ def upload(
     )
 
     _write_v2_template(v2_dict, document_type)
-
-    # TODO(step 8 — out of current refactor scope): once model/document_template.py
-    # and repository/document_template.create_template gain the v2 columns
-    # (country_iso, doc_family, mrz_type, fingerprint, field_rules, qr_config,
-    # schema_version, embedding_id), pass them here as kwargs. Today the disk JSON
-    # and Qdrant carry the enriched data; the DB row keeps the v1 shape.
-    template = create_template(
-        document_type = document_type,
-        country       = country,
-        document_name = document_name,
-        img_path      = str(img_path),
-        fields        = {"personal": personal, "document": document},
-    )
 
     template_id = getattr(template, "id", None)
     if template_id is not None:
