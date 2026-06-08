@@ -1,18 +1,18 @@
 {
   "schema_version": 2,
   "document_type": "proof_of_address",
-  "document_name": "electricity",
+  "document_name": "proof_of_address",
   "country": "MEX",
   "country_iso": "MEX",
-  "doc_family": "identity_photo",
-  "mrz_type": null,
-  "img_path": "template/test/CFE.png",
+  "doc_family": "identity_mrz",
+  "mrz_type": "TD3",
+  "img_path": "template/test/passportLili.jpeg",
   "fingerprint": {
-    "layout_desc": "Utility bill document, no MRZ, white background, no photo, no distinctive structural elements.",
+    "layout_desc": "Passport-type document, MRZ TD3 bottom, burgundy color, photo top-left.",
     "anchors": [
-      "CFE",
-      "Comisión Federal de Electricidad",
-      "RIO NAZAS"
+      "ESTADOS UNIDOS MEXICANOS",
+      "PASAPORTE",
+      "SRE"
     ]
   },
   "fields": [
@@ -29,9 +29,45 @@
       "category": "personal"
     },
     {
-      "key": "document_number",
-      "label": "Document No.",
+      "key": "birth_date",
+      "label": "Date of birth",
+      "type": "date",
+      "category": "personal"
+    },
+    {
+      "key": "sex",
+      "label": "Sex",
+      "type": "single_letter",
+      "category": "personal"
+    },
+    {
+      "key": "nationality",
+      "label": "Nationality",
+      "type": "text",
+      "category": "personal"
+    },
+    {
+      "key": "place_of_birth",
+      "label": "Place of birth",
+      "type": "text",
+      "category": "personal"
+    },
+    {
+      "key": "curp",
+      "label": "CURP",
       "type": "alphanumeric",
+      "category": "personal"
+    },
+    {
+      "key": "document_number",
+      "label": "Passport No.",
+      "type": "alphanumeric",
+      "category": "document"
+    },
+    {
+      "key": "date_of_issue",
+      "label": "Date of issue",
+      "type": "date",
       "category": "document"
     },
     {
@@ -41,7 +77,15 @@
       "category": "document"
     }
   ],
-  "field_rules": {},
+  "field_rules": {
+    "document_number": {
+      "regex": "^[A-Z][0-9]{8}$"
+    },
+    "expiry_date": {
+      "type": "date",
+      "must_be_future": true
+    }
+  },
   "qr_config": {
     "present": false,
     "signed": false

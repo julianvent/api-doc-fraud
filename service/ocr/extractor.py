@@ -2,18 +2,58 @@ import json
 import re
 
 from .backends import VisionBackend
-from .models import PipelineOutput
+from .models import Config, PipelineOutput
 from .normalizer import normalize_fields
 from .templates import build_fields_guide, iter_template_fields
 from .validation import apply_rules
 
 
-_VLM_EXTRACT_PROMPT = """You are extracting structured data from an identity document image.
+_VLM_EXTRACT_PROMPT = """You are extracting structured data from an official document image. The document may be an IDENTITY document (passport, visa, ID card, driver's license, residence permit, PAN/Aadhaar, etc.) OR a PROOF-OF-ADDRESS document (utility bill, bank statement, lease, tax notice, etc.).
 
 Look at the document and identify every visible label-value pair.
-- A LABEL is descriptive text that names a field.
-- A VALUE is concrete data (name, date, number, code) — never descriptive text.
-- For each label, take only the data immediately adjacent (right or directly below).
+- A LABEL is descriptive text that names a field (e.g. "Surname", "Account Number", "Due Date", "Total a pagar").
+- A VALUE is concrete data (name, date, number, code, amount) — never descriptive text.
+- For each label, take only the data immediately adjacent (right, directly below, or right after a colon on the same line).
+
+## Layout patterns to recognize (CRITICAL)
+Labels and values appear in several common layouts. Recognize the label/value boundary in each:
+
+1. Label ABOVE value (stacked vertically):
+   ```
+   Surname
+   GARCIA
+   ```
+   → key="surname", value="GARCIA"
+
+2. Label LEFT of value (same line, separated by spaces or colon):
+   ```
+   Account Number:    123456789
+   Total a pagar:     $1,250.00
+   ```
+   → key="account_number", value="123456789"
+   → key="amount_due",     value="$1,250.00"
+   Take the text BEFORE the colon as the label, the text AFTER as the value.
+
+3. Table with column headers:
+   ```
+   Period         Consumption    Amount
+   May 2024       320 kWh        $1,250
+   ```
+   The column headers are labels; cells are values. Emit one field per cell
+   (e.g. key="period" value="May 2024", key="consumption" value="320 kWh", key="amount" value="$1,250").
+
+4. Inline "Label: value" with no extra whitespace — same rule as pattern 2.
+
+## CRITICAL anti-patterns — do NOT do these
+- NEVER put the value (or any part of it) inside the key. The key encodes the
+  label MEANING; the value is separate.
+  WRONG: {{"total_a_pagar_1250_00": null}}
+  WRONG: {{"account_number_123456789": null}}
+  RIGHT: {{"amount_due": "$1,250.00", "account_number": "123456789"}}
+- NEVER include the label text inside the value.
+  WRONG: {{"amount_due": "Total a pagar: $1,250.00"}}
+  RIGHT: {{"amount_due": "$1,250.00"}}
+- NEVER emit the same data twice (once as key+value, once as a value containing both).
 
 ## KEY formatting (apply ONLY to keys, never to values)
 - Each KEY must be a snake_case identifier in **English**, derived from the meaning of the label.
@@ -76,7 +116,7 @@ Many naming conventions use multiple words or even multiple lines for names. You
 - For names, joining multiple lines INTO one value is the CORRECT behavior (overrides the "never combine lines" rule which applies to non-name fields like document_number, dates, etc.).
 
 ## Prominent standalone data (conservative capture)
-Some documents have prominent data without an explicit label (e.g. a visa number "VJ9188237" printed at the top corner of a visa, an ID at the top of a passport). You MAY emit such data when ALL of these are true:
+Some documents have prominent data without an explicit label (e.g. a visa number "VJ9188237" printed at the top corner of a visa, an ID at the top of a passport, an account or bill number at the top-right of a utility bill). You MAY emit such data when ALL of these are true:
 - It is visually structured (alphanumeric code, ID format, formatted number).
 - It is visually prominent (large/isolated text, not surrounded by other content).
 - There is no explicit label adjacent to it.
@@ -84,13 +124,17 @@ Some documents have prominent data without an explicit label (e.g. a visa number
 Use an inferred snake_case English key based on the document type and data pattern:
 - A code prominent on a visa → "visa_number"
 - A code prominent on a passport → "document_number" (only if not already captured by a labeled field)
+- A code prominent on a utility bill → "account_number" or "bill_number" depending on context
 
-Ignore decorative or boilerplate text: titles, country/agency names, signatures, watermarks, disclaimers, warnings, instructions. Ignore the MRZ block (long strings with `<` separators at the bottom) — it is handled separately.
+Ignore decorative or boilerplate text: titles, country/agency/company names, signatures, watermarks, disclaimers, warnings, instructions, marketing/promotional text. Ignore the MRZ block (long strings with `<` separators at the bottom of identity docs) — it is handled separately. Ignore section headers like "BILLING DETAILS" or "CUSTOMER INFORMATION" — those group fields underneath; they are not fields themselves.
 
 ## Other rules
 - If a label has no visible value, set its value to null.
 - Do NOT invent fields. Do NOT prefix any key with "mrz_".
 - Do NOT emit duplicate keys for the same concept in different languages.
+- Before emitting any field, verify ONE MORE TIME that the key contains ONLY the
+  label meaning (in snake_case English) and the value contains ONLY the data —
+  never mix them.
 
 Return ONLY raw JSON, no explanation, no markdown, no preamble:
 {
@@ -191,7 +235,10 @@ def extract_with_vision(image_path: str,
                         backend: VisionBackend,
                         output: PipelineOutput,
                         spatial_layout: str = "",
-                        template: dict | None = None) -> dict:
+                        template: dict | None = None,
+                        config: Config | None = None) -> dict:
+    if config is None:
+        config = Config()
     prompt = _VLM_EXTRACT_PROMPT
 
     if template is not None:
@@ -202,6 +249,8 @@ def extract_with_vision(image_path: str,
 For each field listed below, extract its value from the document image. Use the EXACT key shown — do not rename, translate, or merge. The label on the document may be in any language (Spanish, English, Hindi, etc.); the required key already specifies the concept. Use the value type hint to validate. If after thoroughly scanning the whole image you cannot find a field, set its value to null.
 
 {fields_guide}
+
+Before moving to PASS 2, verify that EVERY key listed above appears in your output (either with a real value or with null). Do NOT omit any required key from the output — null is the correct answer when the field is truly absent, but silently dropping the key is a failure.
 
 ## Additional fields (PASS 2 — be EQUALLY exhaustive here)
 After completing Pass 1, scan the document AGAIN looking for EVERY OTHER labeled piece of data you can identify. This pass is just as important as Pass 1 — do not skip it, do not be conservative.
@@ -262,6 +311,16 @@ The OCR engine extracted this layout from the same image. Use the image as the p
     flags.extend(mrz_flags)
     if mrz_flags:
         print(f"[OCR] MRZ flags: {mrz_flags}")
+
+    if match_score is not None:
+        mrz_mismatch_count = sum(1 for f in mrz_flags if f.endswith("mrz_mismatch"))
+        if mrz_mismatch_count:
+            penalty     = config.mrz_mismatch_penalty * mrz_mismatch_count
+            match_score = max(0.0, round(match_score - penalty, 3))
+            print(
+                f"[OCR] match_score penalized by {penalty:.2f} "
+                f"for {mrz_mismatch_count} MRZ mismatch(es) → {match_score}"
+            )
 
     if template is not None:
         rule_issues = apply_rules(agent_fields, template.field_rules)

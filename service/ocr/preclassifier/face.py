@@ -22,18 +22,37 @@ def _get_cascade() -> Optional[cv2.CascadeClassifier]:
         return None
 
 
-def has_face(image: np.ndarray) -> bool:
+def _detect_faces(image: np.ndarray):
     cascade = _get_cascade()
     if cascade is None:
-        return False
+        return None
     try:
         gray  = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if image.ndim == 3 else image
-        faces = cascade.detectMultiScale(
+        return cascade.detectMultiScale(
             gray,
             scaleFactor  = 1.1,
             minNeighbors = 5,
             minSize      = (40, 40),
         )
-        return len(faces) > 0
     except Exception:
-        return False
+        return None
+
+
+def has_face(image: np.ndarray) -> bool:
+    faces = _detect_faces(image)
+    return faces is not None and len(faces) > 0
+
+
+def largest_face_area_ratio(image: np.ndarray) -> float:
+    """Area of the largest detected face divided by total image area (0.0 if none)."""
+    faces = _detect_faces(image)
+    if faces is None or len(faces) == 0:
+        return 0.0
+    if image.ndim < 2:
+        return 0.0
+    h, w = image.shape[:2]
+    total = h * w
+    if total <= 0:
+        return 0.0
+    largest = max(fw * fh for (_, _, fw, fh) in faces)
+    return largest / total

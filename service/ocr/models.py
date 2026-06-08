@@ -56,6 +56,10 @@ class Config:
         default_factory=lambda: os.getenv("DISABLE_VECTOR_MATCH", "0") == "1"
     )
 
+    mrz_mismatch_penalty: float = field(
+        default_factory=lambda: float(os.getenv("MRZ_MISMATCH_PENALTY", "0.1"))
+    )
+
 
 @dataclass
 class TextLine:

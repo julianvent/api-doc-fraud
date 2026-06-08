@@ -2,71 +2,64 @@
   "schema_version": 2,
   "document_type": "visa",
   "document_name": "visa",
-  "country": "null",
-  "img_path": "template/test/generic_visa.png",
+  "country": "IND",
+  "country_iso": "IND",
+  "doc_family": "identity_mrz",
+  "mrz_type": "MRV-A",
+  "img_path": "template/test/visaAdjany.jpeg",
+  "fingerprint": {
+    "layout_desc": "Visa-type document, MRZ TD3 bottom, white color, photo top-right.",
+    "anchors": [
+      "REPUBLIC OF INDIA",
+      "VISA",
+      "S-6"
+    ]
+  },
   "fields": [
     {
-      "key": "surname",
-      "label": "Surname",
+      "key": "surname_and_given_name",
+      "label": "Surname and Given Name",
       "type": "text",
-      "category": "personal",
-      "required": false
+      "category": "personal"
     },
     {
-      "key": "given_names",
-      "label": "Given Name",
-      "type": "text",
-      "category": "personal",
-      "required": false
-    },
-    {
-      "key": "passport_number",
-      "label": "Passport Number",
+      "key": "passport_no",
+      "label": "Passport No.",
       "type": "alphanumeric",
-      "category": "personal",
-      "required": false
+      "category": "personal"
     },
     {
       "key": "document_number",
-      "label": "Passport No.",
+      "label": "Document number",
       "type": "alphanumeric",
-      "category": "document",
-      "required": false
+      "category": "document"
+    },
+    {
+      "key": "date_of_issue",
+      "label": "Date of Issue",
+      "type": "date",
+      "category": "document"
     },
     {
       "key": "expiry_date",
-      "label": "Expiry date",
+      "label": "Date of Expiry",
       "type": "date",
-      "category": "document",
-      "required": false
+      "category": "document"
     },
     {
-      "key": "issue_date",
-      "label": "Issue Date",
-      "type": "date",
-      "category": "document",
-      "required": false
-    },
-    {
-      "key": "visa_type_class",
-      "label": "Visa Type / Class",
+      "key": "visa_type",
+      "label": "Visa Type",
       "type": "code",
-      "category": "document",
-      "required": false
+      "category": "document"
     },
     {
-      "key": "entries",
-      "label": "Entries",
+      "key": "no_of_entries",
+      "label": "No Of Entries",
       "type": "entry_count",
-      "category": "document",
-      "required": false
+      "category": "document"
     }
   ],
   "field_rules": {},
-  "fingerprint": {
-    "layout_desc": null,
-    "anchors": []
-  },
   "qr_config": {
     "present": false,
     "signed": false

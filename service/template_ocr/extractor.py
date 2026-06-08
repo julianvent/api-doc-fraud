@@ -63,18 +63,29 @@ def _call_llm(
         response = requests.post(
             ollama_url,
             json={
-                "model":       ollama_model,
-                "prompt":      prompt,
-                "images":      [encoded_img],
-                "stream":      False,
-                "temperature": 0.0,
+                "model":   ollama_model,
+                "prompt":  prompt,
+                "images":  [encoded_img],
+                "stream":  False,
+                "options": {
+                    "temperature": 0.0,
+                    "num_ctx":     10000,
+                    "num_predict": 2048,
+                },
             },
             timeout=timeout,
         )
+        if not response.ok:
+            print(
+                f"  [TemplateOCR/LLM] HTTP {response.status_code} on {ollama_url} "
+                f"(model={ollama_model}, prompt_chars={len(prompt)})"
+            )
+            print(f"  [TemplateOCR/LLM] body: {response.text[:500]}")
         response.raise_for_status()
         raw = response.json().get("response", "")
+        print(f"  [TemplateOCR/LLM] response received ({len(raw)} chars)")
     except Exception as e:
-        print(f"  [TemplateOCR/LLM] Error: {e}")
+        print(f"  [TemplateOCR/LLM] Error: {type(e).__name__}: {e}")
         return []
 
     cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw).strip()
@@ -85,10 +96,15 @@ def _call_llm(
         if match:
             try:
                 data = json.loads(match.group(0))
-            except json.JSONDecodeError:
-                print("  [TemplateOCR/LLM] No se pudo parsear la respuesta")
+            except json.JSONDecodeError as e:
+                print(f"  [TemplateOCR/LLM] No se pudo parsear la respuesta: {e}")
+                print(f"  [TemplateOCR/LLM] raw response (first 1000 chars):\n{raw[:1000]}")
+                if len(raw) > 1000:
+                    print(f"  [TemplateOCR/LLM] ...truncated, total length: {len(raw)} chars")
                 return []
         else:
+            print(f"  [TemplateOCR/LLM] No JSON object found in response")
+            print(f"  [TemplateOCR/LLM] raw response (first 1000 chars):\n{raw[:1000]}")
             return []
 
     if not isinstance(data, dict):

@@ -1,0 +1,61 @@
+{
+  "schema_version": 2,
+  "document_type": "aadhaar",
+  "document_name": "aadhaar",
+  "country": "IND",
+  "country_iso": "IND",
+  "doc_family": "identity_photo",
+  "mrz_type": null,
+  "img_path": "template/test/aadhaar.png",
+  "fingerprint": {
+    "layout_desc": "ID card-type document, MRZ TD3 bottom, maroon color, photo top-right.",
+    "anchors": [
+      "भारत सरकार",
+      "GOVERNMENT OF INDIA",
+      "AADHAAR"
+    ]
+  },
+  "fields": [
+    {
+      "key": "full_name",
+      "label": "Full Name",
+      "type": "text",
+      "category": "personal"
+    },
+    {
+      "key": "birth_date",
+      "label": "Date of Birth",
+      "type": "date",
+      "category": "personal"
+    },
+    {
+      "key": "sex",
+      "label": "Sex",
+      "type": "single_letter",
+      "category": "personal"
+    },
+    {
+      "key": "nationality",
+      "label": "Nationality",
+      "type": "text",
+      "category": "personal"
+    },
+    {
+      "key": "document_number",
+      "label": "Aadhaar Number",
+      "type": "alphanumeric",
+      "category": "document"
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry Date",
+      "type": "date",
+      "category": "document"
+    }
+  ],
+  "field_rules": {},
+  "qr_config": {
+    "present": false,
+    "signed": false
+  }
+}

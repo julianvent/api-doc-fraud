@@ -7,6 +7,7 @@ from .models import PreClassResult
 
 
 _PROOF_OF_ADDRESS_MIN_LINES = 25
+_LARGE_FACE_AREA_RATIO      = 0.02  # >2% of the image → likely a real holder photo (passport / ID), not a logo
 
 
 def _is_paper_aspect(image: np.ndarray) -> bool:
@@ -45,17 +46,38 @@ def classify(image: np.ndarray, lines: list[TextLine]) -> PreClassResult:
             signals      = {"mrz_valid": bool(mrz_result and mrz_result.valid)},
         )
 
-    line_count   = len(lines) if lines else 0
-    paper_aspect = _is_paper_aspect(image)
-    face_present = face.has_face(image)
+    line_count      = len(lines) if lines else 0
+    paper_aspect    = _is_paper_aspect(image)
+    face_area_ratio = face.largest_face_area_ratio(image)
+    face_present    = face_area_ratio > 0.0
+    large_face      = face_area_ratio >= _LARGE_FACE_AREA_RATIO
 
-    if paper_aspect and line_count >= _PROOF_OF_ADDRESS_MIN_LINES and not face_present:
+    # A large face suggests a holder photo (passport / ID), not a logo.
+    # In that case prefer identity classification even on paper aspect.
+    if large_face:
+        return PreClassResult(
+            doc_family   = "identity_photo",
+            has_face     = True,
+            aspect_class = aspect_class,
+            confidence   = 0.75,
+            signals      = {
+                "face_detected":   True,
+                "face_area_ratio": round(face_area_ratio, 4),
+                "line_count":      line_count,
+            },
+        )
+
+    if paper_aspect and line_count >= _PROOF_OF_ADDRESS_MIN_LINES:
         return PreClassResult(
             doc_family   = "proof_of_address",
             aspect_class = aspect_class,
-            has_face     = False,
-            confidence   = 0.70,
-            signals      = {"paper_aspect": True, "line_count": line_count},
+            has_face     = face_present,
+            confidence   = 0.65 if face_present else 0.70,
+            signals      = {
+                "paper_aspect":    True,
+                "line_count":      line_count,
+                "face_area_ratio": round(face_area_ratio, 4),
+            },
         )
 
     if face_present:
@@ -63,8 +85,12 @@ def classify(image: np.ndarray, lines: list[TextLine]) -> PreClassResult:
             doc_family   = "identity_photo",
             has_face     = True,
             aspect_class = aspect_class,
-            confidence   = 0.75,
-            signals      = {"face_detected": True, "line_count": line_count},
+            confidence   = 0.70,
+            signals      = {
+                "face_detected":   True,
+                "face_area_ratio": round(face_area_ratio, 4),
+                "line_count":      line_count,
+            },
         )
 
     if aspect_class == "TD1":

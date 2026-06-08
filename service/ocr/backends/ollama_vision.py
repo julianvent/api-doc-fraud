@@ -23,9 +23,16 @@ class OllamaVisionBackend(VisionBackend):
             "options": {
                 "temperature": 0.0,
                 "num_predict": max_tokens,
-                "num_ctx"    : 5000
+                "num_ctx"    : 10000
             }
         })
+        if not response.ok:
+            print(
+                f"[VLM] Ollama HTTP {response.status_code} on {self._url} "
+                f"(model={self._model}, prompt_chars={len(prompt)}, "
+                f"image_b64_chars={len(image_b64)}, num_predict={max_tokens})"
+            )
+            print(f"[VLM] Ollama body: {response.text[:2000]}")
         response.raise_for_status()
         body = response.json()
         text = body.get("response", "").strip()

@@ -216,7 +216,7 @@ def _run(image_path: str | Path,
         print(f"[OCR] no template at {template_path} → VLM free extraction")
 
     spatial_layout = build_spatial_layout(lines)
-    result = extract_with_vision(str(image_path), vision_backend, output, spatial_layout, template)
+    result = extract_with_vision(str(image_path), vision_backend, output, spatial_layout, template, config)
 
     agent_fields = result.get("result", {}).get("fields", {})
     print(f"[OCR] final extracted fields: {len(agent_fields)} → {list(agent_fields.keys())}")

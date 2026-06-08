@@ -2,102 +2,84 @@
   "schema_version": 2,
   "document_type": "passport",
   "document_name": "passport",
-  "country": "MEX",
-  "country_iso": "MEX",
-  "doc_family": "identity_mrz",
-  "mrz_type": "TD3",
-  "img_path": "template/test/passportLili.jpeg",
+  "country": "COL",
+  "country_iso": "COL",
+  "doc_family": "identity_photo",
+  "mrz_type": null,
+  "img_path": "template/test/pasaportecolombiano.png",
   "fingerprint": {
     "layout_desc": "Passport-type document, MRZ TD3 bottom, burgundy color, photo top-left.",
     "anchors": [
-      "ESTADOS UNIDOS MEXICANOS",
+      "REPUBLICA DE COLOMBIA",
       "PASAPORTE",
-      "SRE"
+      "COL"
     ]
   },
   "fields": [
     {
       "key": "surname",
-      "label": "Surname",
+      "label": "Apellidos",
       "type": "text",
       "category": "personal"
     },
     {
       "key": "given_names",
-      "label": "Given names",
+      "label": "Nombres",
       "type": "text",
       "category": "personal"
     },
     {
       "key": "birth_date",
-      "label": "Date of birth",
+      "label": "Fecha de nacimiento",
       "type": "date",
       "category": "personal"
     },
     {
       "key": "sex",
-      "label": "Sex",
+      "label": "Sexo",
       "type": "single_letter",
       "category": "personal"
     },
     {
       "key": "nationality",
-      "label": "Nationality",
+      "label": "Nacionalidad",
       "type": "text",
       "category": "personal"
     },
     {
-      "key": "place_of_birth",
-      "label": "Place of birth",
+      "key": "lugar_de_nacimiento",
+      "label": "Lugar de nacimiento",
       "type": "text",
       "category": "personal"
     },
     {
-      "key": "personal_id",
-      "label": "Personal ID",
-      "type": "text",
+      "key": "n_mero_personal",
+      "label": "Número personal",
+      "type": "code",
       "category": "personal"
     },
     {
       "key": "document_number",
-      "label": "Passport No.",
+      "label": "Pasaporte N.°",
       "type": "alphanumeric",
       "category": "document"
     },
     {
-      "key": "date_of_issue",
-      "label": "Date of issue",
+      "key": "fecha_de_expedici_n",
+      "label": "Fecha de expedición",
       "type": "date",
       "category": "document"
     },
     {
       "key": "expiry_date",
-      "label": "Expiry date",
+      "label": "Fecha de vencimiento",
       "type": "date",
-      "category": "document"
-    },
-    {
-      "key": "document_type",
-      "label": "Document type",
-      "type": "code",
-      "category": "document"
-    },
-    {
-      "key": "issuing_country",
-      "label": "Issuing country",
-      "type": "code",
-      "category": "document"
-    },
-    {
-      "key": "remarks",
-      "label": "Remarks",
-      "type": "text",
       "category": "document"
     }
   ],
   "field_rules": {
     "document_number": {
-      "regex": "^[A-Z][0-9]{8}$"
+      "regex": "^CC[0-9]{7}$"
     },
     "expiry_date": {
       "type": "date",
