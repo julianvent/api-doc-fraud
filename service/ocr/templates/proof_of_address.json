@@ -1,18 +1,18 @@
 {
   "schema_version": 2,
   "document_type": "proof_of_address",
-  "document_name": "proof_of_address",
+  "document_name": "CFE",
   "country": "MEX",
   "country_iso": "MEX",
-  "doc_family": "identity_mrz",
-  "mrz_type": "TD3",
-  "img_path": "template/test/passportLili.jpeg",
+  "doc_family": "identity_photo",
+  "mrz_type": null,
+  "img_path": "template/test/imagen_2026-06-09_115803701.png",
   "fingerprint": {
-    "layout_desc": "Passport-type document, MRZ TD3 bottom, burgundy color, photo top-left.",
+    "layout_desc": "Utility bill, no MRZ visible, green color, photo top-right.",
     "anchors": [
-      "ESTADOS UNIDOS MEXICANOS",
-      "PASAPORTE",
-      "SRE"
+      "CFE",
+      "Comisión Federal de Electricidad",
+      "50 Millones"
     ]
   },
   "fields": [
@@ -29,63 +29,31 @@
       "category": "personal"
     },
     {
-      "key": "birth_date",
-      "label": "Date of birth",
-      "type": "date",
-      "category": "personal"
-    },
-    {
-      "key": "sex",
-      "label": "Sex",
-      "type": "single_letter",
-      "category": "personal"
-    },
-    {
-      "key": "nationality",
-      "label": "Nationality",
-      "type": "text",
-      "category": "personal"
-    },
-    {
-      "key": "place_of_birth",
-      "label": "Place of birth",
-      "type": "text",
-      "category": "personal"
-    },
-    {
-      "key": "curp",
-      "label": "CURP",
-      "type": "alphanumeric",
-      "category": "personal"
-    },
-    {
-      "key": "document_number",
-      "label": "Passport No.",
+      "key": "account_number",
+      "label": "Account Number",
       "type": "alphanumeric",
       "category": "document"
     },
     {
-      "key": "date_of_issue",
-      "label": "Date of issue",
+      "key": "periodo_facturado",
+      "label": "Periodo Facturado",
+      "type": "text",
+      "category": "document"
+    },
+    {
+      "key": "due_date",
+      "label": "Due Date",
       "type": "date",
       "category": "document"
     },
     {
-      "key": "expiry_date",
-      "label": "Expiry date",
-      "type": "date",
+      "key": "total_a_pagar",
+      "label": "Total a pagar",
+      "type": "currency",
       "category": "document"
     }
   ],
-  "field_rules": {
-    "document_number": {
-      "regex": "^[A-Z][0-9]{8}$"
-    },
-    "expiry_date": {
-      "type": "date",
-      "must_be_future": true
-    }
-  },
+  "field_rules": {},
   "qr_config": {
     "present": false,
     "signed": false

@@ -4,11 +4,11 @@
   "document_name": "visa",
   "country": "IND",
   "country_iso": "IND",
-  "doc_family": "identity_mrz",
-  "mrz_type": "MRV-A",
-  "img_path": "template/test/visaAdjany.jpeg",
+  "doc_family": "proof_of_address",
+  "mrz_type": null,
+  "img_path": "template/test/visa.png",
   "fingerprint": {
-    "layout_desc": "Visa-type document, MRZ TD3 bottom, white color, photo top-right.",
+    "layout_desc": "Visa-type document, MRZ TD3 bottom right, blue color, photo top-right.",
     "anchors": [
       "REPUBLIC OF INDIA",
       "VISA",
@@ -17,21 +17,27 @@
   },
   "fields": [
     {
-      "key": "surname_and_given_name",
-      "label": "Surname and Given Name",
+      "key": "surname",
+      "label": "Surname",
       "type": "text",
       "category": "personal"
     },
     {
-      "key": "passport_no",
-      "label": "Passport No.",
-      "type": "alphanumeric",
+      "key": "given_names",
+      "label": "Given Names",
+      "type": "text",
       "category": "personal"
     },
     {
       "key": "document_number",
-      "label": "Document number",
+      "label": "Passport No.",
       "type": "alphanumeric",
+      "category": "document"
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry date",
+      "type": "date",
       "category": "document"
     },
     {
@@ -41,25 +47,33 @@
       "category": "document"
     },
     {
-      "key": "expiry_date",
-      "label": "Date of Expiry",
-      "type": "date",
-      "category": "document"
-    },
-    {
       "key": "visa_type",
       "label": "Visa Type",
-      "type": "code",
+      "type": "text",
       "category": "document"
     },
     {
       "key": "no_of_entries",
       "label": "No Of Entries",
-      "type": "entry_count",
+      "type": "text",
+      "category": "document"
+    },
+    {
+      "key": "special_endorsement",
+      "label": "Special Endorsement",
+      "type": "text",
       "category": "document"
     }
   ],
-  "field_rules": {},
+  "field_rules": {
+    "document_number": {
+      "regex": "^N[0-9]{8}$"
+    },
+    "expiry_date": {
+      "type": "date",
+      "must_be_future": true
+    }
+  },
   "qr_config": {
     "present": false,
     "signed": false

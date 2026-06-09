@@ -55,7 +55,7 @@
     {
       "key": "n_mero_personal",
       "label": "Número personal",
-      "type": "code",
+      "type": "alphanumeric",
       "category": "personal"
     },
     {
@@ -65,21 +65,21 @@
       "category": "document"
     },
     {
-      "key": "fecha_de_expedici_n",
-      "label": "Fecha de expedición",
+      "key": "expiry_date",
+      "label": "Fecha de vencimiento",
       "type": "date",
       "category": "document"
     },
     {
-      "key": "expiry_date",
-      "label": "Fecha de vencimiento",
+      "key": "fecha_de_expedici_n",
+      "label": "Fecha de expedición",
       "type": "date",
       "category": "document"
     }
   ],
   "field_rules": {
     "document_number": {
-      "regex": "^CC[0-9]{7}$"
+      "regex": "^[A-Z][0-9]{8}$"
     },
     "expiry_date": {
       "type": "date",

@@ -52,8 +52,24 @@ def classify(image: np.ndarray, lines: list[TextLine]) -> PreClassResult:
     face_present    = face_area_ratio > 0.0
     large_face      = face_area_ratio >= _LARGE_FACE_AREA_RATIO
 
-    # A large face suggests a holder photo (passport / ID), not a logo.
-    # In that case prefer identity classification even on paper aspect.
+    # Paper aspect + lots of lines is the strongest signal for a proof-of-address
+    # document, even if a small face logo is detected. Face logos on bills are
+    # usually <5% of the area; holder photos on passports/IDs are 10%+.
+    if paper_aspect and line_count >= _PROOF_OF_ADDRESS_MIN_LINES:
+        return PreClassResult(
+            doc_family   = "proof_of_address",
+            aspect_class = aspect_class,
+            has_face     = face_present,
+            confidence   = 0.65 if face_present else 0.75,
+            signals      = {
+                "paper_aspect":    True,
+                "line_count":      line_count,
+                "face_area_ratio": round(face_area_ratio, 4),
+            },
+        )
+
+    # Without paper-shape + many lines, a large face is the next-best signal:
+    # it indicates a passport or ID photo.
     if large_face:
         return PreClassResult(
             doc_family   = "identity_photo",
@@ -67,25 +83,12 @@ def classify(image: np.ndarray, lines: list[TextLine]) -> PreClassResult:
             },
         )
 
-    if paper_aspect and line_count >= _PROOF_OF_ADDRESS_MIN_LINES:
-        return PreClassResult(
-            doc_family   = "proof_of_address",
-            aspect_class = aspect_class,
-            has_face     = face_present,
-            confidence   = 0.65 if face_present else 0.70,
-            signals      = {
-                "paper_aspect":    True,
-                "line_count":      line_count,
-                "face_area_ratio": round(face_area_ratio, 4),
-            },
-        )
-
     if face_present:
         return PreClassResult(
             doc_family   = "identity_photo",
             has_face     = True,
             aspect_class = aspect_class,
-            confidence   = 0.70,
+            confidence   = 0.65,
             signals      = {
                 "face_detected":   True,
                 "face_area_ratio": round(face_area_ratio, 4),

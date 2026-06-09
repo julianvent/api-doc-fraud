@@ -136,12 +136,39 @@ both. NEVER emit a single "surname_and_given_names" field for a passport.
 ──────────────────────────────────────────────
 DOCUMENT NUMBER
 ──────────────────────────────────────────────
- 
+
 If the document number has no explicit label but appears as a prominent standalone
 alphanumeric code (header or corner area), include it as document_number with
 label="Document number" (NEVER use the value itself as the label).
 If MRZ is present, read it to confirm or recover the document_number if not found
 elsewhere — but do NOT include the MRZ lines themselves as fields.
+
+──────────────────────────────────────────────
+ADDRESS (PROOF-OF-ADDRESS — MANDATORY EXCEPTION)
+──────────────────────────────────────────────
+
+THIS IS AN EXPLICIT EXCEPTION TO THE "ONLY VISIBLE LABELS" RULE — read carefully.
+
+For proof-of-address documents (utility bill, bank statement, lease, tax notice,
+etc.) the holder's SERVICE / BILLING ADDRESS is the document's primary purpose
+and MUST appear as a field — it is non-negotiable, the document exists to
+prove it.
+
+The address frequently appears WITHOUT a printed label, as a multi-line block
+right under the customer/holder name (street + colonia/neighborhood + city +
+postal code). You MUST emit it as a field even when no label is visible next
+to it — exactly like the DOCUMENT NUMBER rule above is an exception for
+identity docs.
+
+Emit:
+  - key:   "address"
+  - label: the printed label if any ("Domicilio", "Service address",
+           "Dirección", "Calle", etc.); OTHERWISE use label="Address".
+  - type:  "text"
+
+If you find yourself NOT emitting an address field on a proof-of-address
+document, you are wrong — go back and find the multi-line block under the
+customer name and emit it.
  
 ──────────────────────────────────────────────
 ALWAYS IGNORE

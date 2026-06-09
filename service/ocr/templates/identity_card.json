@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "document_type": "identity_card",
+  "document_name": "INE",
+  "country": "MEX",
+  "country_iso": "MEX",
+  "doc_family": "identity_photo",
+  "mrz_type": null,
+  "img_path": "template/test/imagen_2026-06-09_115241490.png",
+  "fingerprint": {
+    "layout_desc": "Identity document, MRZ TD3 bottom right, white color, photo top-left.",
+    "anchors": [
+      "MEXICO",
+      "INSTITUTO NACIONAL ELECTORAL",
+      "CRECENCIAL PARA VOTAR"
+    ]
+  },
+  "fields": [
+    {
+      "key": "surname",
+      "label": "Surname",
+      "type": "text",
+      "category": "personal"
+    },
+    {
+      "key": "given_names",
+      "label": "Given names",
+      "type": "text",
+      "category": "personal"
+    },
+    {
+      "key": "birth_date",
+      "label": "Date of birth",
+      "type": "date",
+      "category": "personal"
+    },
+    {
+      "key": "document_number",
+      "label": "Document number",
+      "type": "alphanumeric",
+      "category": "document"
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry date",
+      "type": "date",
+      "category": "document"
+    }
+  ],
+  "field_rules": {},
+  "qr_config": {
+    "present": false,
+    "signed": false
+  }
+}
