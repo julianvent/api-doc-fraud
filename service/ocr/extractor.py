@@ -187,6 +187,51 @@ def _compare_fields_vs_mrz(fields: dict, output: PipelineOutput) -> tuple[list[d
     return inconsistencies, flags
 
 
+def _build_unverifiable_response(
+    *,
+    document_type: str,
+    source: str | None,
+    error_detail: str,
+    raw_response: str,
+) -> dict:
+    """Shape-compatible response for when the VLM step failed and we cannot
+    safely report any extracted fields. verdict='unverifiable' makes the
+    failure explicit instead of masquerading as 'genuine' with empty fields."""
+    flags = [f"vlm_unavailable: {error_detail}"]
+    return {
+        "agent_fields": {
+            "source"         : "vlm_error",
+            "document_type"  : document_type,
+            "fields"         : {},
+            "extras"         : {},
+            "inconsistencies": [{"field": "vlm", "description": error_detail}],
+            "confidence"     : "low",
+            "verdict"        : "unverifiable",
+            "notes"          : "VLM extraction failed; no fields could be extracted",
+        },
+        "document_type"  : document_type,
+        "fields"         : {},
+        "extras"         : {},
+        "match_score"    : None,
+        "flags"          : flags,
+        "verdict"        : "unverifiable",
+        "confidence"     : "low",
+        "result": {
+            "document_type"  : document_type,
+            "fields"         : {},
+            "extras"         : {},
+            "inconsistencies": [{"field": "vlm", "description": error_detail}],
+            "flags"          : flags,
+            "match_score"    : None,
+            "verdict"        : "unverifiable",
+            "confidence"     : "low",
+            "source"         : source,
+            "confidence_avg" : 0.0,
+            "raw_vlm_response": raw_response[:500] if raw_response else "",
+        },
+    }
+
+
 def extract_with_vision(image_path: str,
                         backend: VisionBackend,
                         output: PipelineOutput,
@@ -221,15 +266,28 @@ The OCR engine extracted this layout from the same image. Use the image as the p
 
     print(f"[OCR] calling VLM ({backend.__class__.__name__}) for extraction")
     raw = ""
+    vlm_error: str | None = None
     try:
         raw = backend.describe(image_path, prompt, max_tokens=2048)
         print(f"[OCR] VLM responded ({len(raw)} chars)")
         parsed = _parse_response(raw)
         print(f"[OCR] parsed OK — VLM returned keys: {list((parsed.get('fields') or {}).keys())}")
     except Exception as e:
-        print(f"[OCR] VLM parse FAILED: {type(e).__name__}: {e}")
+        vlm_error = f"{type(e).__name__}: {e}"
+        print(f"[OCR] VLM parse FAILED: {vlm_error}")
         print(f"[OCR] raw response was:\n{raw}")
         parsed = {"error": "vision response could not be parsed", "raw": raw}
+
+    # If the VLM step failed, do NOT proceed with empty fields as if extraction
+    # succeeded — that previously produced verdict="genuine" with match_score=0.
+    # Surface the failure with verdict="unverifiable" and a clear flag.
+    if vlm_error is not None or "error" in parsed:
+        return _build_unverifiable_response(
+            document_type = output.document_type or "unknown",
+            source        = output.source,
+            error_detail  = vlm_error or str(parsed.get("error")),
+            raw_response  = raw,
+        )
 
     doc_type   = parsed.get("document_type") or output.document_type or "unknown"
     raw_fields = parsed.get("fields", {}) or {}

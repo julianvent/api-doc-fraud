@@ -125,7 +125,9 @@ def generate_template(
             detail="expected_fields is required when mode='manual'",
         )
 
-    image_bytes = image.file.read()
+    from controller._upload_limits import read_within_limit
+
+    image_bytes = read_within_limit(image)
     if not image_bytes:
         raise HTTPException(status_code=422, detail="empty image upload")
 

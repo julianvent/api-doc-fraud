@@ -31,14 +31,23 @@ TEMPLATE_PATH = "template"
 
 
 def upload_file(file: UploadFile, path: str, id: str) -> Path:
-    """Save uploaded file under files/<id>/. Returns the saved path."""
-    dest_dir = Path(f"{path}/{id}")
+    """Save uploaded file under files/<id>/. Returns the saved path.
+
+    The client-supplied filename is sanitized to its basename to prevent path
+    traversal (e.g. '../../etc/passwd.jpg' → 'passwd.jpg'). The upload size is
+    bounded by ensure_upload_size before any bytes are copied."""
+    from controller._upload_limits import ensure_upload_size
+
+    ensure_upload_size(file)
+    safe_id   = Path(id).name or "anon"
+    safe_name = Path(file.filename or "upload.bin").name or "upload.bin"
+    dest_dir  = Path(path) / safe_id
     dest_dir.mkdir(parents=True, exist_ok=True)
-    path = dest_dir / file.filename
-    with path.open(mode="wb") as buffer:
+    dest = dest_dir / safe_name
+    with dest.open(mode="wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-    print(f" > File saved: {path}")
-    return path
+    print(f" > File saved: {dest}")
+    return dest
 
 
 def verify(files: list[UploadFile], id: str, document_type: str | None = None) -> BaseVerifyResponse:

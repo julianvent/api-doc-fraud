@@ -33,6 +33,8 @@ class Template(BaseModel):
     document_name     : Optional[str]          = None
     country           : Optional[str]          = None
     country_iso       : Optional[str]          = None
+    state             : Optional[str]          = None
+    edition           : Optional[int]          = None
     doc_family        : Optional[str]          = None
     doc_type          : Optional[str]          = None
     issuing_authority : Optional[str]          = None
@@ -40,6 +42,7 @@ class Template(BaseModel):
     year_start        : Optional[int]          = None
     year_end          : Optional[int]          = None
     img_path          : Optional[str]          = None
+    anchors           : list[str]              = Field(default_factory=list)
     fingerprint       : Optional[Fingerprint]  = None
     fields            : list[FieldSpec]        = Field(default_factory=list)
     field_rules       : dict[str, dict]        = Field(default_factory=dict)
@@ -83,9 +86,15 @@ def load_template(raw: dict) -> Template:
     """
     Accepts a v1 (fields as {personal:[], document:[]}) or v2 (fields as flat list)
     template dict and returns a Template normalized to v2 shape.
+    Normalizes country_iso to upper-case so verify-time matching is consistent.
     """
     if not isinstance(raw, dict):
         raise ValueError("template must be a dict")
+
+    raw = {**raw}  # shallow copy so we don't mutate the caller's dict
+    iso = raw.get("country_iso")
+    if isinstance(iso, str):
+        raw["country_iso"] = iso.strip().upper() or None
 
     version = int(raw.get("schema_version", 1))
 
@@ -97,6 +106,7 @@ def load_template(raw: dict) -> Template:
         document_type  = raw.get("document_type", "unknown"),
         document_name  = raw.get("document_name"),
         country        = raw.get("country"),
+        country_iso    = raw.get("country_iso"),
         img_path       = raw.get("img_path"),
         fields         = _flatten_v1_fields(raw.get("fields", [])),
     )

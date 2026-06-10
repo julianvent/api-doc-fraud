@@ -217,7 +217,7 @@ def _run(image_path: str | Path,
         n_fields = len(iter_template_fields(template))
         print(
             f"[OCR] template FOUND on disk (document_type={document_type}, "
-            f"country_iso={template.country_iso}, "
+            f"country_iso={template.country_iso}, edition={template.edition}, "
             f"{n_fields} fields) → VLM guided by template"
         )
     else:
