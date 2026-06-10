@@ -206,14 +206,25 @@ def _run(image_path: str | Path,
 
     output = _build_pipeline_output(document_type, lines, mrz, confidence_avg)
 
-    template      = load_template(config.templates_dir, document_type)
-    template_path = Path(config.templates_dir) / f"{document_type}.json"
+    country_iso = preclass.country_iso
+    template    = load_template(
+        document_type,
+        country_iso=country_iso,
+        templates_dir=config.templates_dir,
+    )
 
     if template is not None:
         n_fields = len(iter_template_fields(template))
-        print(f"[OCR] template FOUND at {template_path} ({n_fields} fields) → VLM guided by template")
+        print(
+            f"[OCR] template FOUND on disk (document_type={document_type}, "
+            f"country_iso={template.country_iso}, "
+            f"{n_fields} fields) → VLM guided by template"
+        )
     else:
-        print(f"[OCR] no template at {template_path} → VLM free extraction")
+        print(
+            f"[OCR] no template on disk for document_type={document_type!r} "
+            f"(country_iso={country_iso!r}) → VLM free extraction"
+        )
 
     spatial_layout = build_spatial_layout(lines)
     result = extract_with_vision(str(image_path), vision_backend, output, spatial_layout, template)

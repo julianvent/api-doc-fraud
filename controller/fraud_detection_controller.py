@@ -24,9 +24,7 @@ from service.ocr import ocr
 from service.preprocessor import preprocessor
 from service.preprocessor.app.io.writer import save_image
 from service.tampering import tampering
-from service.template_ocr import template_ocr
-
-from model.document_template import DocumentTemplate
+from model.document_template import DocumentTemplate  # noqa: F401  (kept for legacy callers)
 
 FILES_PATH = "files"
 TEMPLATE_PATH = "template"
@@ -97,16 +95,5 @@ def verify(files: list[UploadFile], id: str, document_type: str | None = None) -
     )
 
 
-def upload_template(
-    img: UploadFile, document_name: str, document_type: str, country: str | None = None
-) -> DocumentTemplate:
-    path = upload_file(file=img, path=TEMPLATE_PATH, id="test")
-
-    new_template = template_ocr.upload(
-        document_type=document_type,
-        country=country,
-        document_name=document_name,
-        img_path=path.as_posix(),
-    )
-
-    return new_template
+# Legacy upload_template removed. Template generation now goes through
+# template_controller.generate_template + template_controller.confirm_template.

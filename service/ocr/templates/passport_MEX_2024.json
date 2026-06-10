@@ -1,0 +1,88 @@
+{
+  "schema_version": 2,
+  "document_type": "passport",
+  "document_name": "Pasaporte Mexicano",
+  "country": "México",
+  "country_iso": "MEX",
+  "state": null,
+  "edition": 2024,
+  "doc_family": "identity_mrz",
+  "mrz_type": "TD3",
+  "img_path": "template/passport_MEX_2024/template.jpeg",
+  "fields": [
+    {
+      "key": "surname",
+      "label": "Apellidos",
+      "type": "text",
+      "category": "personal"
+    },
+    {
+      "key": "given_names",
+      "label": "Nombres",
+      "type": "text",
+      "category": "personal"
+    },
+    {
+      "key": "document_number",
+      "label": "No. Pasaporte",
+      "type": "alphanumeric",
+      "category": "document"
+    },
+    {
+      "key": "birth_date",
+      "label": "Fecha de Nacimiento",
+      "type": "date",
+      "category": "personal"
+    },
+    {
+      "key": "expiry_date",
+      "label": "Fecha de Vencimiento",
+      "type": "date",
+      "category": "document"
+    },
+    {
+      "key": "issue_date",
+      "label": "Fecha de Expedición",
+      "type": "date",
+      "category": "document"
+    },
+    {
+      "key": "personal_number",
+      "label": "CURP",
+      "type": "alphanumeric",
+      "category": "personal"
+    },
+    {
+      "key": "birtg_place",
+      "label": "Lugar de Nacimiento",
+      "type": "date",
+      "category": "persona"
+    },
+    {
+      "key": "type",
+      "label": "Tipo",
+      "type": "text",
+      "category": "document"
+    },
+    {
+      "key": "state_code",
+      "label": "Código de ESTADOS",
+      "type": "text",
+      "category": "document"
+    }
+  ],
+  "anchors": [
+    "ESTADOS UNIDOS MEXICANOS",
+    "PASAPORTE",
+    "PASSPORT"
+  ],
+  "fingerprint": {
+    "layout_desc": "Pasaporte mexicano TD3"
+  },
+  "field_rules": {},
+  "qr_config": {
+    "present": false,
+    "signed": false
+  },
+  "created_at": "2026-06-10T09:07:14.562783+00:00"
+}
