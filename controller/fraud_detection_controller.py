@@ -19,12 +19,16 @@ from fastapi import UploadFile
 
 from api.v1.schema.verify import BaseVerifyResponse
 from service import policy, report_builder
+from service.logging_config import get_logger
 from service.metadata import metadata
 from service.ocr import ocr
 from service.preprocessor import preprocessor
 from service.preprocessor.app.io.writer import save_image
 from service.tampering import tampering
 from model.document_template import DocumentTemplate  # noqa: F401  (kept for legacy callers)
+
+
+log = get_logger(__name__)
 
 FILES_PATH = "files"
 TEMPLATE_PATH = "template"
@@ -46,7 +50,7 @@ def upload_file(file: UploadFile, path: str, id: str) -> Path:
     dest = dest_dir / safe_name
     with dest.open(mode="wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-    print(f" > File saved: {dest}")
+    log.debug("file saved: %s", dest)
     return dest
 
 

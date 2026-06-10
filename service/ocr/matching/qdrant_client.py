@@ -1,6 +1,11 @@
 import uuid
 from typing import Any, Optional
 
+from service.logging_config import get_logger
+
+
+log = get_logger(__name__)
+
 
 def _try_import():
     try:
@@ -54,7 +59,7 @@ def get_client(url: str) -> Optional[Any]:
         _CLIENT_CACHE[url] = client
         return client
     except Exception as e:
-        print(f"[qdrant] connect failed: {type(e).__name__}: {e}")
+        log.error("qdrant connect failed at %s: %s: %s", url, type(e).__name__, e)
         return None
 
 
@@ -110,7 +115,7 @@ def search(
             for h in hits
         ]
     except Exception as e:
-        print(f"[qdrant] search failed: {type(e).__name__}: {e}")
+        log.error("qdrant search failed: %s: %s", type(e).__name__, e)
         return []
 
 
@@ -151,5 +156,5 @@ def upsert(
         )
         return True
     except Exception as e:
-        print(f"[qdrant] upsert failed: {type(e).__name__}: {e}")
+        log.error("qdrant upsert failed: %s: %s", type(e).__name__, e)
         return False

@@ -36,12 +36,15 @@ from api.v1.schema.template_generate import (
     OCRLine,
     PreclassPayload,
 )
+from service.logging_config import get_logger
 from service.ocr.engine import load_image
 from service.ocr.models import Config as OCRConfig
 from service.ocr.ocr import _get_engine
 from service.ocr.preclassifier import classify as preclassify
 from service.template_ocr import heuristics, scan_cache
 
+
+log = get_logger(__name__)
 
 TEMPLATES_DIR  = Path(OCRConfig().templates_dir)
 TEMPLATE_IMAGES_DIR = Path("template")
@@ -343,12 +346,12 @@ def _index_template_in_qdrant(slug: str, data: dict) -> None:
         from service.ocr.preclassifier import PreClassResult
         from service.template_ocr.schema import Fingerprint
     except Exception as e:
-        print(f"  [template] qdrant deps unavailable: {e}")
+        log.warning("qdrant deps unavailable: %s", e)
         return
 
     cfg = OCRConfig()
     if cfg.disable_vector_match or not matching.is_available():
-        print("  [template] qdrant disabled / unavailable — skipping upsert")
+        log.info("qdrant disabled / unavailable — skipping upsert for slug=%s", slug)
         return
 
     fp_data = data.get("fingerprint") or {}
@@ -363,7 +366,7 @@ def _index_template_in_qdrant(slug: str, data: dict) -> None:
     )
     text = matching.serialize_for_template(fp, preclass)
     if not text:
-        print("  [template] empty fingerprint text — skipping upsert")
+        log.warning("empty fingerprint text — skipping qdrant upsert for slug=%s", slug)
         return
 
     vector = matching.embed(text, cfg.embedding_url, cfg.embedding_model)

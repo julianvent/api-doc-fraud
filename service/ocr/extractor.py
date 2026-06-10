@@ -1,11 +1,15 @@
 import json
 import re
 
+from service.logging_config import get_logger
 from .backends import VisionBackend
 from .models import PipelineOutput
 from .normalizer import normalize_fields
 from .templates import build_fields_guide, iter_template_fields
 from .validation import apply_rules
+
+
+log = get_logger(__name__)
 
 
 _VLM_EXTRACT_PROMPT = """You are extracting structured data from an identity document image.
@@ -144,9 +148,12 @@ def _compare_fields_vs_mrz(fields: dict, output: PipelineOutput) -> tuple[list[d
     flags          : list[str]  = []
 
     mrz = output.mrz
-    print(f"[MRZ-CMP] mrz present: {mrz is not None}, mrz_unverified: {output.mrz_unverified is not None}, mrz_verified: {output.mrz_verified is not None}")
+    log.debug(
+        "mrz present=%s unverified=%s verified=%s",
+        mrz is not None, output.mrz_unverified is not None, output.mrz_verified is not None,
+    )
     if mrz is None:
-        print(f"[MRZ-CMP] no MRZ → skipping comparison")
+        log.debug("no MRZ → skipping comparison")
         return inconsistencies, flags
 
     if output.mrz_unverified:
@@ -155,22 +162,18 @@ def _compare_fields_vs_mrz(fields: dict, output: PipelineOutput) -> tuple[list[d
             "field"      : "mrz",
             "description": "MRZ checksum failed — possible tampering",
         })
-        print(f"[MRZ-CMP] MRZ checksum FAILED → added mrz_checksum_failed flag")
+        log.warning("MRZ checksum FAILED → flag mrz_checksum_failed")
 
     mrz_dict = _mrz_to_dict(mrz)
-    print(f"[MRZ-CMP] mrz_dict keys: {list(mrz_dict.keys())}")
-    print(f"[MRZ-CMP] mrz_dict values: {mrz_dict}")
-    print(f"[MRZ-CMP] fields keys: {list(fields.keys())}")
+    log.debug("mrz_dict=%s field_keys=%s", mrz_dict, list(fields.keys()))
 
     for key, mrz_value in mrz_dict.items():
         field_value = fields.get(key)
-        print(f"[MRZ-CMP] check '{key}': field={field_value!r}, mrz={mrz_value!r}")
         if not field_value or not mrz_value:
-            print(f"[MRZ-CMP]   → skipped (empty)")
+            log.debug("mrz-cmp %r skipped (empty)", key)
             continue
         norm_f = _norm(field_value)
         norm_m = _norm(mrz_value)
-        print(f"[MRZ-CMP]   → normalized: '{norm_f}' vs '{norm_m}'")
         if norm_f != norm_m:
             inconsistencies.append({
                 "field"      : key,
@@ -179,11 +182,11 @@ def _compare_fields_vs_mrz(fields: dict, output: PipelineOutput) -> tuple[list[d
             flag = f"{key} mrz_mismatch"
             if flag not in flags:
                 flags.append(flag)
-            print(f"[MRZ-CMP]   → MISMATCH → flag '{flag}'")
+            log.info("mrz-cmp %r MISMATCH: layout=%r mrz=%r", key, field_value, mrz_value)
         else:
-            print(f"[MRZ-CMP]   → match")
+            log.debug("mrz-cmp %r match", key)
 
-    print(f"[MRZ-CMP] final flags: {flags}")
+    log.debug("mrz comparison final flags=%s", flags)
     return inconsistencies, flags
 
 
@@ -264,18 +267,18 @@ Do not invent fields with no clear label, but do NOT skip a field just because i
 The OCR engine extracted this layout from the same image. Use the image as the primary source; treat this layout only as a hint about where text appears.
 {spatial_layout}"""
 
-    print(f"[OCR] calling VLM ({backend.__class__.__name__}) for extraction")
+    log.info("calling VLM (%s) for extraction", backend.__class__.__name__)
     raw = ""
     vlm_error: str | None = None
     try:
         raw = backend.describe(image_path, prompt, max_tokens=2048)
-        print(f"[OCR] VLM responded ({len(raw)} chars)")
+        log.debug("VLM responded (%d chars)", len(raw))
         parsed = _parse_response(raw)
-        print(f"[OCR] parsed OK — VLM returned keys: {list((parsed.get('fields') or {}).keys())}")
+        log.info("VLM extraction parsed OK — keys=%s", list((parsed.get("fields") or {}).keys()))
     except Exception as e:
         vlm_error = f"{type(e).__name__}: {e}"
-        print(f"[OCR] VLM parse FAILED: {vlm_error}")
-        print(f"[OCR] raw response was:\n{raw}")
+        log.error("VLM call/parse FAILED: %s", vlm_error)
+        log.debug("VLM raw response:\n%s", raw)
         parsed = {"error": "vision response could not be parsed", "raw": raw}
 
     # If the VLM step failed, do NOT proceed with empty fields as if extraction
@@ -310,25 +313,25 @@ The OCR engine extracted this layout from the same image. Use the image as the p
             agent_fields.pop(k, None)
         found_count = len(template_keys) - len(missing)
         match_score = round(found_count / len(template_keys), 3) if template_keys else None
-        print(f"[OCR] template match_score: {found_count}/{len(template_keys)} = {match_score}")
+        log.info("template match_score: %d/%d = %s", found_count, len(template_keys), match_score)
         if missing:
-            print(f"[OCR] missing template fields → flags: {missing}")
+            log.warning("missing template fields → flags: %s", missing)
         if extras:
-            print(f"[OCR] extras (non-template fields): {list(extras.keys())}")
+            log.info("extras (non-template fields): %s", list(extras.keys()))
 
     inconsistencies, mrz_flags = _compare_fields_vs_mrz(agent_fields, output)
     flags.extend(mrz_flags)
     if mrz_flags:
-        print(f"[OCR] MRZ flags: {mrz_flags}")
+        log.info("MRZ flags: %s", mrz_flags)
 
     if template is not None:
         rule_issues = apply_rules(agent_fields, template.field_rules)
         if rule_issues:
             inconsistencies.extend(rule_issues)
-            print(f"[RULES] {len(rule_issues)} field_rule violations")
+            log.warning("%d field_rule violations", len(rule_issues))
 
     if inconsistencies:
-        print(f"[OCR] inconsistencies: {len(inconsistencies)}")
+        log.info("inconsistencies: %d", len(inconsistencies))
 
     verdict = "suspicious" if inconsistencies else "genuine"
     confidence_score = _confidence_to_score(parsed.get("confidence"))

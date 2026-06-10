@@ -2,6 +2,11 @@ from typing import Optional
 
 import requests
 
+from service.logging_config import get_logger
+
+
+log = get_logger(__name__)
+
 
 def embed(
     text: str,
@@ -28,9 +33,9 @@ def embed(
         data   = response.json()
         vector = data.get("embedding")
         if not isinstance(vector, list) or not vector:
-            print(f"[embeddings] Ollama returned no embedding (model={model})")
+            log.warning("Ollama returned no embedding (model=%s)", model)
             return None
         return [float(x) for x in vector]
     except Exception as e:
-        print(f"[embeddings] Ollama call failed: {type(e).__name__}: {e}")
+        log.error("Ollama embeddings call failed: %s: %s", type(e).__name__, e)
         return None

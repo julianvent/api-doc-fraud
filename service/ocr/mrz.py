@@ -1,5 +1,10 @@
 import re
+
+from service.logging_config import get_logger
 from .models import TextLine, MRZResult
+
+
+log = get_logger(__name__)
 
 MRZ_PATTERN = re.compile(r'^[A-Z0-9<]{30,44}$')
 
@@ -56,7 +61,7 @@ def _try_checker(checker_cls, mrz_string: str):
         checker = checker_cls(mrz_string)
         return checker
     except Exception as e:
-        print(f"{checker_cls.__name__} failed: {type(e).__name__}: {e}")
+        log.debug("%s failed: %s: %s", checker_cls.__name__, type(e).__name__, e)
         return None
 
 
@@ -98,27 +103,24 @@ def _build_checker(lines: list[str]):
 
 def _parse(lines: list[str]) -> MRZResult | None:
     try:
-        print("MRZ lines:")
-        for i, line in enumerate(lines):
-            print(f"{i + 1}: {repr(line)} len={len(line)}")
+        log.debug("MRZ lines: %s", [(repr(l), len(l)) for l in lines])
 
         mrz_string = "\n".join(lines)
-        print(f"Total length: {len(mrz_string)}")
+        log.debug("MRZ total length=%d", len(mrz_string))
 
         checker = _build_checker(lines)
 
         if checker is None:
-            print("Unsupported MRZ format")
+            log.warning("unsupported MRZ format")
             return None
 
         is_valid = bool(checker)
-        print(f"Checker type: {type(checker).__name__}")
-        print(f"Checker valid: {is_valid}")
+        log.debug("MRZ checker=%s valid=%s", type(checker).__name__, is_valid)
 
         try:
             f = checker.fields()
         except Exception as field_error:
-            print(f"MRZ fields error: {type(field_error).__name__}: {field_error}")
+            log.warning("MRZ fields error: %s: %s", type(field_error).__name__, field_error)
             return MRZResult(
                 valid=False,
                 surname=None,
@@ -142,14 +144,14 @@ def _parse(lines: list[str]) -> MRZResult | None:
         )
 
     except Exception as e:
-        print(f"MRZ parse error: {type(e).__name__}: {e}")
+        log.error("MRZ parse error: %s: %s", type(e).__name__, e)
         return None
 
 
 def detect(lines: list[TextLine]) -> MRZResult | None:
     mrz_lines = _find_lines(lines)
 
-    print(f"MRZ candidate lines found: {len(mrz_lines)}")
+    log.debug("MRZ candidate lines found: %d", len(mrz_lines))
 
     if len(mrz_lines) < 2:
         return None
@@ -157,6 +159,6 @@ def detect(lines: list[TextLine]) -> MRZResult | None:
     mrz_lines = _reconstruct(mrz_lines)
     result = _parse(mrz_lines)
 
-    print(f"MRZ parse result: {result.valid if result else None}")
+    log.debug("MRZ parse result: valid=%s", result.valid if result else None)
 
     return result

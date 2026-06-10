@@ -2,8 +2,11 @@ import base64
 import os
 import requests
 
+from service.logging_config import get_logger
 from .base import VisionBackend
 
+
+log = get_logger(__name__)
 
 _DEFAULT_TIMEOUT = int(os.getenv("OLLAMA_VISION_TIMEOUT", "600"))
 
@@ -58,5 +61,5 @@ class OllamaVisionBackend(VisionBackend):
         body = response.json()
         text = body.get("response", "").strip()
         if not text:
-            print(f"[VLM] empty response. Ollama returned: {body}")
+            log.warning("VLM empty response. Ollama body: %s", body)
         return text

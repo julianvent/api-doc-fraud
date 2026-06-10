@@ -8,10 +8,15 @@ from pathlib import Path
 from PIL import Image as PILImage
 
 
+from service.logging_config import get_logger
 from .models import Config, TextLine
 os.environ["PADDLE_DISABLE_MKLDNN"] = "1"
 
 import numpy as np
+
+
+log = get_logger(__name__)
+
 
 def load_image(path: str | Path, max_side: int = 1_600) -> np.ndarray:
     img = PILImage.open(path).convert("RGB")
@@ -21,7 +26,7 @@ def load_image(path: str | Path, max_side: int = 1_600) -> np.ndarray:
         scale = max_side / longest
         new_w, new_h = int(w * scale), int(h * scale)
         img = img.resize((new_w, new_h), PILImage.LANCZOS)
-        print(f"  Resized: {w}x{h} → {new_w}x{new_h}")
+        log.debug("resized image: %dx%d → %dx%d", w, h, new_w, new_h)
     return np.array(img)
 
 class OCREngine(ABC):
@@ -123,8 +128,7 @@ class DotsOCRAdapter(OCREngine):
         else:
             self._device = "cpu"
 
-        print(f"  [DotsOCR] Model : {self._model_path}")
-        print(f"  [DotsOCR] Device: {self._device}")
+        log.info("[DotsOCR] model=%s device=%s", self._model_path, self._device)
 
         self._model, self._processor = self._load_model()
 
@@ -230,10 +234,10 @@ class DotsOCRAdapter(OCREngine):
                 try:
                     data = json.loads(match.group(0))
                 except json.JSONDecodeError:
-                    print("  [DotsOCR] Warning: output no parseable como JSON")
+                    log.warning("[DotsOCR] output not parseable as JSON")
                     return self._fallback_plain_text(cleaned)
             else:
-                print("  [DotsOCR] Warning: no se encontró JSON en el output")
+                log.warning("[DotsOCR] no JSON found in output")
                 return self._fallback_plain_text(cleaned)
 
         if isinstance(data, list):
@@ -295,8 +299,7 @@ class DolphinOCRAdapter(OCREngine):
         if self._repo_path not in sys.path:
             sys.path.insert(0, self._repo_path)
 
-        print(f"  [DolphinOCR] Model : {self._model_path}")
-        print(f"  [DolphinOCR] Repo  : {self._repo_path}")
+        log.info("[DolphinOCR] model=%s repo=%s", self._model_path, self._repo_path)
 
         from demo_page import DOLPHIN  # type: ignore  (viene del repo clonado)
         self._model = DOLPHIN(self._model_path)
@@ -337,7 +340,7 @@ class DolphinOCRAdapter(OCREngine):
 
         json_path = os.path.join(save_dir, "output_json", "doc.json")
         if not os.path.exists(json_path):
-            print(f"  [DolphinOCR] Warning: no output JSON in {save_dir}")
+            log.warning("[DolphinOCR] no output JSON in %s", save_dir)
             return []
 
         with open(json_path, encoding="utf-8") as f:

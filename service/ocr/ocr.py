@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional
 
+from service.logging_config import get_logger
 from service.ocr.backends import OllamaVisionBackend
 from service.ocr.identifier import identify
 from service.ocr.extractor import extract_with_vision
@@ -12,6 +13,9 @@ from .engine import OCREngine, PaddleOCRAdapter, DotsOCRAdapter, DolphinOCRAdapt
 from .mrz import detect
 from .preclassifier import classify as preclassify, PreClassResult
 from .templates import iter_template_fields, load_template
+
+
+log = get_logger(__name__)
 
 
 _ENGINES: dict[str, type[OCREngine]] = {
@@ -111,7 +115,7 @@ def _try_vector_match(
         score_threshold = config.match_threshold,
     )
     if not hits:
-        print(f"[OCR] qdrant: no match above threshold={config.match_threshold}")
+        log.info("qdrant: no match above threshold=%s", config.match_threshold)
         return None
 
     hit      = hits[0]
@@ -119,9 +123,9 @@ def _try_vector_match(
     if not doc_type:
         return None
 
-    print(
-        f"[OCR] qdrant match: document_type='{doc_type}' "
-        f"score={hit['score']:.3f} template_id={hit.get('template_id')}"
+    log.info(
+        "qdrant match: document_type=%r score=%.3f template_id=%s",
+        doc_type, hit["score"], hit.get("template_id"),
     )
     return {
         "document_type": doc_type,
@@ -162,35 +166,38 @@ def _run(image_path: str | Path,
          document_type: str | None = None) -> dict:
 
     image_path = Path(image_path)
-    print(f"\n[OCR] === processing {image_path.name} ===")
+    log.info("processing %s", image_path.name)
 
     image  = load_image(image_path)
     engine = _get_engine(config)
-    print(f"[OCR] image loaded, engine={config.ocr_engine}")
+    log.debug("image loaded, engine=%s", config.ocr_engine)
 
     lines = engine.extract(image)
-    print(f"[OCR] OCR extracted {len(lines)} lines")
+    log.info("OCR extracted %d lines", len(lines))
 
     preclass = preclassify(image, lines)
-    print(
-        f"[OCR] preclassifier: family={preclass.doc_family} mrz_type={preclass.mrz_type} "
-        f"country={preclass.country_iso} confidence={preclass.confidence:.2f}"
+    log.info(
+        "preclassifier: family=%s mrz_type=%s country=%s confidence=%.2f",
+        preclass.doc_family, preclass.mrz_type, preclass.country_iso, preclass.confidence,
     )
 
     document_type, match_source, qdrant_hit = _resolve_document_type(
         document_type, preclass, image_path, lines, config, vision_backend
     )
-    print(f"[OCR] document_type='{document_type}' resolved via source='{match_source}'")
+    log.info("document_type=%r resolved via source=%r", document_type, match_source)
 
     if not lines:
-        print(f"[OCR] no text extracted — aborting")
+        log.warning("no text extracted — aborting")
         return {"error": "no text extracted", "source": None, "document_type": document_type}
 
     confidence_avg = _avg_confidence(lines)
-    print(f"[OCR] avg OCR confidence: {confidence_avg:.3f}")
+    log.debug("avg OCR confidence: %.3f", confidence_avg)
 
     if confidence_avg < config.confidence_threshold:
-        print(f"[OCR] confidence below threshold ({config.confidence_threshold}) — aborting")
+        log.warning(
+            "confidence %.3f below threshold %s — aborting",
+            confidence_avg, config.confidence_threshold,
+        )
         return {
             "error"         : "low confidence — document quality insufficient",
             "confidence_avg": round(confidence_avg, 4),
@@ -200,9 +207,9 @@ def _run(image_path: str | Path,
 
     mrz = detect(lines)
     if mrz:
-        print(f"[OCR] MRZ detected: valid={mrz.valid}")
+        log.info("MRZ detected: valid=%s", mrz.valid)
     else:
-        print(f"[OCR] no MRZ detected")
+        log.debug("no MRZ detected")
 
     output = _build_pipeline_output(document_type, lines, mrz, confidence_avg)
 
@@ -215,22 +222,22 @@ def _run(image_path: str | Path,
 
     if template is not None:
         n_fields = len(iter_template_fields(template))
-        print(
-            f"[OCR] template FOUND on disk (document_type={document_type}, "
-            f"country_iso={template.country_iso}, edition={template.edition}, "
-            f"{n_fields} fields) → VLM guided by template"
+        log.info(
+            "template FOUND on disk (document_type=%s, country_iso=%s, edition=%s, "
+            "%d fields) → VLM guided by template",
+            document_type, template.country_iso, template.edition, n_fields,
         )
     else:
-        print(
-            f"[OCR] no template on disk for document_type={document_type!r} "
-            f"(country_iso={country_iso!r}) → VLM free extraction"
+        log.warning(
+            "no template on disk for document_type=%r (country_iso=%r) → VLM free extraction",
+            document_type, country_iso,
         )
 
     spatial_layout = build_spatial_layout(lines)
     result = extract_with_vision(str(image_path), vision_backend, output, spatial_layout, template)
 
     agent_fields = result.get("result", {}).get("fields", {})
-    print(f"[OCR] final extracted fields: {len(agent_fields)} → {list(agent_fields.keys())}")
+    log.info("final extracted fields: %d → %s", len(agent_fields), list(agent_fields.keys()))
 
     if isinstance(result, dict):
         result["preclass"] = {
@@ -246,7 +253,7 @@ def _run(image_path: str | Path,
             result["matched_template_id"] = qdrant_hit["template_id"]
             result["match_score_vector"] = qdrant_hit["score"]
 
-    print(f"[OCR] === done ===\n")
+    log.info("done processing %s", image_path.name)
     return result
 
 
