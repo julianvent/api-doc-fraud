@@ -12,7 +12,6 @@ plus a point in Qdrant for vector matching. NO database row.
 
 from __future__ import annotations
 
-import io
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -20,7 +19,6 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from PIL import Image as PILImage
 
 from fastapi import HTTPException, UploadFile
 
@@ -41,6 +39,7 @@ from service.ocr.engine import load_image
 from service.ocr.models import Config as OCRConfig
 from service.ocr.ocr import _get_engine
 from service.ocr.preclassifier import classify as preclassify
+from service.preprocessor import preprocessor
 from service.template_ocr import heuristics, scan_cache
 
 
@@ -136,10 +135,28 @@ def generate_template(
 
     ext = (Path(image.filename or "").suffix.lstrip(".") or "jpg").lower()
     generate_id = scan_cache.save(image_bytes, extension=ext)
+    cached_path = scan_cache.path_for(generate_id)
+    if cached_path is None:
+        raise HTTPException(status_code=500, detail="failed to persist upload to scan cache")
 
-    pil_img    = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
-    np_img     = np.array(pil_img)
-    width, h   = pil_img.size
+    # Reuse the same preprocessing pipeline the verify path uses. This handles
+    # PDFs (rasterized via fitz), deskew, contrast, etc. — the template OCR
+    # quality is what determines downstream verify quality, so we want the
+    # same pixels going through both flows.
+    try:
+        processed_pages = preprocessor.process([cached_path])
+    except Exception as e:
+        log.error("preprocessor failed on %s: %s: %s", cached_path.name, type(e).__name__, e)
+        raise HTTPException(
+            status_code=422,
+            detail=f"could not preprocess upload (unsupported or corrupt file?): {e}",
+        ) from e
+
+    if not processed_pages:
+        raise HTTPException(status_code=422, detail="preprocessor returned no pages")
+
+    np_img   = _ensure_rgb(processed_pages[0].image)
+    h, width = np_img.shape[:2]
 
     config = OCRConfig()
     engine = _get_engine(config)
@@ -159,6 +176,10 @@ def generate_template(
         suggestions.extend(heuristics.suggest_from_mrz(mrz_result))
         suggestions.extend(heuristics.suggest_from_expected(expected_fields or [], lines))
 
+    # Best-effort: populate value_line_ids / label_line_id for MRZ-derived
+    # suggestions so the client has the OCR coordinates if it wants to render
+    # an overlay or jump to the location at confirm time.
+    suggestions = heuristics.enrich_with_ocr_positions(suggestions, lines)
     suggestions = _dedupe_by_key(suggestions)
     anchors     = heuristics.extract_anchors(lines, image_height=np_img.shape[0])
 
@@ -259,6 +280,23 @@ def _persist_template_image(image_bytes: bytes, slug: str, ext: str) -> str:
     dest = dest_dir / f"template.{ext}"
     dest.write_bytes(image_bytes)
     return dest.as_posix()
+
+
+def _ensure_rgb(image: np.ndarray) -> np.ndarray:
+    """PaddleOCR (and most other downstream consumers) require H×W×3 RGB.
+    The preprocessor may return grayscale (H×W), grayscale-with-alpha (H×W×2),
+    BGRA (H×W×4), or RGBA. Normalize to RGB here."""
+    if image.ndim == 2:
+        return np.stack([image, image, image], axis=-1)
+    if image.ndim == 3:
+        channels = image.shape[2]
+        if channels == 1:
+            return np.repeat(image, 3, axis=2)
+        if channels == 3:
+            return image
+        if channels == 4:
+            return image[:, :, :3]
+    raise ValueError(f"unsupported image shape {image.shape}")
 
 
 def _detect_qr(image: np.ndarray) -> dict:

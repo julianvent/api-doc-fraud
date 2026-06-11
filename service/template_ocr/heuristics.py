@@ -244,6 +244,70 @@ def _find_value_for(label_idx: int, lines: list[TextLine]) -> Optional[int]:
     return best_idx
 
 
+_ENRICH_MIN_VALUE_LEN = 4   # below this, fuzzy match produces too many false positives
+_ENRICH_MIN_SCORE     = 70  # partial_ratio score threshold
+
+# Field keys whose MRZ values use formats that don't match what the document
+# prints (dates are YYMMDD in MRZ, free format on the layout). We skip them.
+_ENRICH_SKIP_KEYS = {"birth_date", "expiry_date", "sex"}
+
+
+def enrich_with_ocr_positions(
+    suggestions: list[Suggestion],
+    lines: list[TextLine],
+) -> list[Suggestion]:
+    """Best-effort: for suggestions that have a value_preview but no
+    value_line_ids, fuzzy-match the value against the OCR text and populate
+    the line IDs when a clear match is found.
+
+    Suggestions whose value cannot be located are returned UNCHANGED (with
+    empty line_ids) — the consumer can still surface them as text-only fields
+    and let the user accept or discard them in the confirm step."""
+    if not lines:
+        return list(suggestions)
+
+    out: list[Suggestion] = []
+    for s in suggestions:
+        if s.value_line_ids or s.key in _ENRICH_SKIP_KEYS:
+            out.append(s)
+            continue
+
+        value = (s.value_preview or "").strip()
+        if len(value) < _ENRICH_MIN_VALUE_LEN:
+            out.append(s)
+            continue
+
+        best_idx, best_score = None, 0
+        for i, line in enumerate(lines):
+            if not line.text:
+                continue
+            score = fuzz.partial_ratio(value.lower(), line.text.lower())
+            if score > best_score:
+                best_score = score
+                best_idx   = i
+
+        if best_idx is None or best_score < _ENRICH_MIN_SCORE:
+            out.append(s)
+            continue
+
+        label_idx = s.label_line_id
+        if label_idx is None:
+            label_idx = _find_label_for(best_idx, lines)
+
+        out.append(Suggestion(
+            key            = s.key,
+            label          = s.label,
+            type           = s.type,
+            value_preview  = s.value_preview,
+            label_line_id  = label_idx,
+            value_line_ids = [best_idx],
+            confidence     = s.confidence,
+            source         = s.source,
+        ))
+
+    return out
+
+
 def extract_anchors(lines: list[TextLine], image_height: int) -> list[str]:
     """Top-N short header lines: y in top 15% of image, length 5-40 chars, no digits."""
     if not lines or image_height <= 0:
