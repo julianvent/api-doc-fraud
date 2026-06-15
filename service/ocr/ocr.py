@@ -9,7 +9,7 @@ from service.ocr.agent import analyze, fill_missing_fields
 from service.ocr.agent.base import LLMBackend
 from service.ocr.agent.ollama import OllamaBackend
 from service.ocr.visualizer import visualize_matplotlib, visualize_template_match, visualize_agent_extraction
-from service.ocr.template_matcher import load_templates, match as match_template
+from service.ocr.template_matcher import load_templates, match as match_template, align_to_template
 
 from .models import Config, PipelineOutput
 from .engine import OCREngine, PaddleOCRAdapter, DotsOCRAdapter, DolphinOCRAdapter, load_image
@@ -207,9 +207,16 @@ def _run(image_path: str | Path,
          backend: LLMBackend,
          document_type: str | None = None) -> dict:
 
-    engine = _get_engine(config)
-    image  = load_image(Path(image_path))
-    lines  = engine.extract(image)
+    engine    = _get_engine(config)
+    image     = load_image(Path(image_path))
+    templates = load_templates(document_type) if document_type else []
+
+    # ── homography alignment (antes del OCR) ───────────────────────────────
+    if templates:
+        image, aligned_ok = align_to_template(image, templates[0])
+        print(f"[OCR] homography alignment: {'ok' if aligned_ok else 'skipped (no ref image or too few keypoints)'}")
+
+    lines = engine.extract(image)
 
     if not lines:
         return {"error": "no text extracted", "source": None}
@@ -224,87 +231,84 @@ def _run(image_path: str | Path,
         }
 
     # ── template path ──────────────────────────────────────────────────────
-    if document_type:
-        templates = load_templates(document_type)
+    if document_type and templates:
+        best_template, match_result = max(
+            ((t, match_template(lines, t)) for t in templates),
+            key=lambda pair: pair[1].match_score,
+        )
 
-        if templates:
-            best_template, match_result = max(
-                ((t, match_template(lines, t)) for t in templates),
-                key=lambda pair: pair[1].match_score,
-            )
+        if not match_result.matched:
+            return {
+                "verdict"            : "unverifiable",
+                "flags"              : ["layout_mismatch"],
+                "match_score"        : match_result.match_score,
+                "document_type"      : document_type,
+                "template_available" : True,
+                "message"            : "document layout does not match expected template",
+            }
 
-            if not match_result.matched:
-                return {
-                    "verdict"            : "unverifiable",
-                    "flags"              : ["layout_mismatch"],
-                    "match_score"        : match_result.match_score,
-                    "document_type"      : document_type,
-                    "template_available" : True,
-                    "message"            : "document layout does not match expected template",
-                }
+        template_fields: dict[str, str | None] = {}
+        for key, field_lines in match_result.field_lines.items():
+            if not field_lines:
+                template_fields[key] = None
+                continue
+            ordered = _row_order(field_lines)
+            template_fields[key] = " ".join(l.text.strip() for l in ordered).strip()
+        template_fields = normalize_fields(template_fields)
 
-            template_fields: dict[str, str | None] = {}
-            for key, field_lines in match_result.field_lines.items():
-                if not field_lines:
-                    template_fields[key] = None
-                    continue
-                ordered = _row_order(field_lines)
-                template_fields[key] = " ".join(l.text.strip() for l in ordered).strip()
+        english_lines = filter_latin(lines)
+
+        null_fields = [k for k, v in template_fields.items() if not v]
+        if null_fields:
+            filled = fill_missing_fields(english_lines, backend, null_fields)
+            for k, v in filled.items():
+                if v:
+                    template_fields[k] = v
             template_fields = normalize_fields(template_fields)
 
-            english_lines = filter_latin(lines)
+        mrz = detect(lines)
 
-            null_fields = [k for k, v in template_fields.items() if not v]
-            if null_fields:
-                filled = fill_missing_fields(english_lines, backend, null_fields)
-                for k, v in filled.items():
-                    if v:
-                        template_fields[k] = v
-                template_fields = normalize_fields(template_fields)
+        mapping = _load_mrz_mappings().get(document_type, {})
+        if mrz and mrz.valid and mapping:
+            mismatches = _compare_mrz(template_fields, mrz, mapping)
+            if mismatches:
+                return {
+                    "verdict"           : "unverifiable",
+                    "flags"             : ["mrz_mismatch"],
+                    "match_score"       : match_result.match_score,
+                    "document_type"     : document_type,
+                    "template_available": True,
+                    "mismatches"        : mismatches,
+                }
 
-            mrz = detect(lines)
+        output = _build_pipeline_output(
+            lines,
+            "\n".join(l.text for l in lines),
+            mrz, lines, confidence_avg,
+            template_available   = True,
+            template_match_score = match_result.match_score,
+        )
+        _save_visualization(image, output, Path(image_path), config)
 
-            mapping = _load_mrz_mappings().get(document_type, {})
-            if mrz and mrz.valid and mapping:
-                mismatches = _compare_mrz(template_fields, mrz, mapping)
-                if mismatches:
-                    return {
-                        "verdict"           : "unverifiable",
-                        "flags"             : ["mrz_mismatch"],
-                        "match_score"       : match_result.match_score,
-                        "document_type"     : document_type,
-                        "template_available": True,
-                        "mismatches"        : mismatches,
-                    }
+        image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        template_vis_path = Path(config.ocr_output_dir) / f"{Path(image_path).stem}_template.png"
+        visualize_template_match(image_bgr, lines, best_template, match_result, str(template_vis_path))
 
-            output = _build_pipeline_output(
-                lines,
-                "\n".join(l.text for l in lines),
-                mrz, lines, confidence_avg,
-                template_available   = True,
-                template_match_score = match_result.match_score,
-            )
-            _save_visualization(image, output, Path(image_path), config)
+        template_fields_out = {k: _to_ddmmyyyy(v) if v else v for k, v in template_fields.items()}
+        mrz_dict_out = None
+        if mrz:
+            mrz_dict_out = {k: _to_ddmmyyyy(v) if v else v for k, v in _mrz_to_dict(mrz).items()}
 
-            image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-            template_vis_path = Path(config.ocr_output_dir) / f"{Path(image_path).stem}_template.png"
-            visualize_template_match(image_bgr, lines, best_template, match_result, str(template_vis_path))
-
-            template_fields_out = {k: _to_ddmmyyyy(v) if v else v for k, v in template_fields.items()}
-            mrz_dict_out = None
-            if mrz:
-                mrz_dict_out = {k: _to_ddmmyyyy(v) if v else v for k, v in _mrz_to_dict(mrz).items()}
-
-            return {
-                "verdict"           : "verifiable",
-                "match_score"       : match_result.match_score,
-                "document_type"     : document_type,
-                "document_name"     : match_result.document_name,
-                "template_available": True,
-                "fields"            : template_fields_out,
-                "mrz"               : mrz_dict_out,
-                "unmatched_fields"  : match_result.unmatched_fields,
-            }
+        return {
+            "verdict"           : "verifiable",
+            "match_score"       : match_result.match_score,
+            "document_type"     : document_type,
+            "document_name"     : match_result.document_name,
+            "template_available": True,
+            "fields"            : template_fields_out,
+            "mrz"               : mrz_dict_out,
+            "unmatched_fields"  : match_result.unmatched_fields,
+        }
 
     # ── fallback path ──────────────────────────────────────────────────────
     english_lines = filter_latin(lines)
