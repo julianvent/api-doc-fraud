@@ -92,72 +92,84 @@ def _build_prompt(output: PipelineOutput,
         mrz_status  = "VERIFIED (checksum passed)" if mrz_valid else "UNVERIFIED (checksum failed — possible tampering)"
         mrz_section = f"""
 ## MRZ reference — {mrz_status}
-These values come from the Machine Readable Zone and are provided ONLY for inconsistency detection.
-DO NOT copy them into your extraction. Extract every field independently from the document layout, then compare against MRZ in Step 3.
+These values are provided ONLY for inconsistency detection in Step 3.
+Do NOT copy them as extracted values. Extract every field independently from the layout.
 {json.dumps(mrz_fields, ensure_ascii=False, indent=2)}
 """
 
     return f"""You are a strict document validation agent for official identity documents.
 
-## Critical extraction rules
-- A field value is the text immediately to the right of its label (same y) OR the single line directly below it (next y, similar x).
-- NEVER concatenate multiple lines into a single field value.
-- NEVER include another field's label or value inside a field value.
-- If a value seems too long (more than 5 words for names, more than 12 chars for dates/numbers), it is likely wrong — re-check the coordinates.
-- Extract values exactly as they appear — do not interpret, translate, or reformat.
-
 ## Document layout
-Each line has normalized spatial coordinates [y=row x=column] (0.0 to 1.0).
-Lines with similar y values are on the same row.
-A label and its value are typically on the same row (same y, different x) or the value is on the next row directly below the label (slightly higher y, similar x).
+Each line has normalized spatial coordinates [y=row x=column] (0.0 to 1.0). Lines with similar y (≤ 0.02 apart) are on the same row.
+- A LABEL is descriptive text that names a field. A VALUE is concrete data (name, date, number, code).
+- The value of a label is the FIRST line of data immediately adjacent to it, in ONE of these positions:
+  1. Same row, to the IMMEDIATE RIGHT of the label (the nearest higher-x line, same y ±0.025).
+  2. The IMMEDIATE NEXT row below (the row with the smallest y strictly greater than the label's y, within +0.015 to +0.05, similar x ±0.15).
+- **Stop at the first immediate line.** Do NOT keep walking down rows. If the immediate next row does not contain the value, the value is null.
+- Take ONE single line as the value. Extract VERBATIM (preserve casing, accents, punctuation, non-ASCII). Never combine multiple lines.
+- **The value is ONLY the data — it must NOT include the label text.** If a row contains both the label and the value (e.g. the row is "Passport No. G12345678"), the value is `"G12345678"`, NOT `"Passport No. G12345678"`. If a row reads "Date of Expiry: 08/03/2027", the value is `"08/03/2027"`, NOT the whole string.
+- **Each line is consumed once.** If a line is the value of label A, it cannot also be the value of label B.
+- **A line that is the translation of a label is NOT a value.** Lines that start with "/" (e.g. "/Surname and Given Name") or that consist of purely descriptive words translating the previous label belong to the LABEL group, not the value. Skip them as candidate values.
+- **Be skeptical of OCR fragments.** If the candidate value looks like OCR noise (very short truncated token, partial word, isolated punctuation, or anything that doesn't read as concrete data), prefer `null` over guessing. Do not extract values like "VSA" if it's clearly a fragment of "VISA".
+- If no concrete data is in the immediate adjacent position, the value is null. Never substitute with another label or a far-away line.
 
 {spatial_layout}
 {mrz_section}
+## Step 1 — Document type
+Infer the document type from the layout content. Use a short snake_case identifier. If you cannot determine it, use "unknown".
 
-## Step 1 — Identify document type
-Infer the document type from the layout content (e.g. "visa", "passport", "national_id", "driver_license"). Use a short snake_case identifier. If you cannot determine it, use "unknown".
+## Step 2 — Extract fields
+**BE EXHAUSTIVE.** Work in two explicit passes before producing the JSON:
 
-## Step 2 — Discover every label and extract its value
-Scan the layout and find every line that acts as a label (the descriptive text that introduces a field — e.g. "Surname", "Date of Issue", "Passport No", "Visa Type").
-For each label:
-1. Derive a snake_case field key from the label text (e.g. "Date of Expiry (DD/MM/YYYY)" → "date_of_expiry", "Passport No." → "passport_no", "उपमा और नाम /Surname and Given Name" → "surname_and_given_name"). Use only ASCII letters, digits and underscores in the key.
-2. Find the value: the SAME ROW (same y ±0.02) to the right, OR the NEXT ROW (y +0.02 to +0.06) at similar x.
-3. Take ONLY that single line as the value. If you cannot determine a value, set it to null.
-4. Do NOT invent fields that have no clear label in the layout.
-5. Do NOT copy values from the MRZ reference — extract every field independently from the document layout.
-6. Also produce an `extractions` array with the EXACT layout text used for each pair (this is needed so the result can be audited visually):
-   - `key`        : the same snake_case key
-   - `label_text` : the verbatim text of the label line as it appears in the layout
-   - `value_text` : the verbatim text of the value line (empty string "" if the value is null)
+**Pass 1 — enumerate every candidate label.** Sweep the layout top-to-bottom, left-to-right. List EVERY line that could be a label, including:
+- Short labels (e.g. "No.", "Type", "Sex", "M/F", "DOB")
+- Labels in corners, margins, headers, footers, and side columns
+- Labels stacked above each other in dense form blocks
+- Labels separated by "/" or in bilingual form (count as one label per concept)
+- Labels that may not have an obvious value next to them (still include them)
 
-## Step 3 — Detect inconsistencies (this is where MRZ is used)
+Do not stop after the "obvious" labels. The goal is to enumerate them ALL before pairing.
+
+**Pass 2 — pair each label with its value** using the spatial rules above. If the immediate adjacent position has no concrete data, the value is `null` — but the label still gets an entry.
+
+After pass 2, mentally count: the number of entries in `fields` should equal the number of labels you enumerated in Pass 1. If it is fewer, you skipped some — go back and add them with `null` where needed.
+
+Do NOT invent fields that have no visible label in the layout. Do NOT use field names from the MRZ reference unless the SAME label words appear in the layout. Better to emit a key with `null` than to skip a visible label, but NEVER add a key whose label is not in the layout.
+
+- Each OCR line is either a label OR a value, never both.
+- Each KEY: snake_case identifier derived from the label text (ASCII only in the key). **Replace EVERY space between words with an underscore** — words must never be glued together. Strip parenthetical hints and punctuation. Lowercase everything. For bilingual labels on the same row or "/-separated" (e.g. "Tipo / Type", "Lugar de Nacimiento / Place of Birth"), use only the English/Latin portion.
+  Examples (note the underscores):
+    "Date of Expiry (DD/MM/YYYY)"          → "date_of_expiry"
+    "Passport No."                         → "passport_no"
+    "Tipo / Type"                          → "type"
+    "Surname and Given Name"               → "surname_and_given_name"   (NOT "sumameandgivenname")
+    "उपमा और नाम /Surname and Given Name" → "surname_and_given_name"
+    "Place of Birth"                       → "place_of_birth"           (NOT "placeofbirth")
+- Each VALUE: verbatim text of the value line. Use null if no value was found in the adjacent positions.
+- Do NOT emit duplicate keys for the same concept written in different languages.
+- NEVER prefix any key with `mrz_`. MRZ is for Step 3 validation only.
+
+## Step 3 — Detect inconsistencies
 An inconsistency is ONLY:
 - date_of_issue is after date_of_expiry
 - A visually extracted field directly contradicts the same MRZ field
-- MRZ checksum failed (flagged above if applicable)
+- MRZ checksum failed
 
 Not inconsistencies:
 - Future dates (normal for date_of_expiry)
-- Missing fields
-- Anything not directly verifiable from the document
+- Missing or null fields
+- Anything not directly verifiable from the layout
 
 ## Step 4 — Verdict
-genuine    → all extracted fields consistent, MRZ valid or absent
+genuine    → all fields consistent, MRZ valid or absent
 suspicious → at least one confirmed inconsistency or MRZ checksum failed
 
 Return ONLY raw JSON, no explanation, no markdown, no preamble:
 {{
     "document_type": "<snake_case type>",
     "fields": {{
-        "<derived_snake_case_key>": "<single line value as found or null>"
+        "<snake_case_key>": "<verbatim value or null>"
     }},
-    "extractions": [
-        {{
-            "key"       : "<derived_snake_case_key>",
-            "label_text": "<verbatim label line as in layout>",
-            "value_text": "<verbatim value line as in layout, or empty string>"
-        }}
-    ],
     "inconsistencies": [
         {{
             "field"      : "<field key>",
@@ -229,33 +241,36 @@ def analyze(output: PipelineOutput,
     except Exception:
         agent_result = {"error": "agent response could not be parsed", "raw": raw}
 
-    doc_type     = agent_result.get("document_type", "default")
-    agent_fields = normalize_fields(agent_result.get("fields", {}))
-    extractions  = agent_result.get("extractions", []) or []
+    doc_type        = agent_result.get("document_type", "unknown")
+    raw_fields      = agent_result.get("fields", {}) or {}
+    agent_fields    = normalize_fields({
+        k: v for k, v in raw_fields.items()
+        if isinstance(k, str) and not k.lower().startswith("mrz_")
+    })
+    inconsistencies = list(agent_result.get("inconsistencies", []) or [])
 
-    mrz_output = None
-    if output.mrz_verified:
-        mrz_output = {
-            "valid" : True,
-            "source": "mrz_verified",
-            "fields": mrz_fields
-        }
-    elif output.mrz_unverified:
-        mrz_output = {
-            "valid"  : False,
-            "source" : "mrz_unverified",
-            "fields" : mrz_fields,
-            "warning": "MRZ checksum failed — fields may be unreliable"
-        }
+    flags: list[str] = []
+    if output.mrz_unverified:
+        flags.append("mrz_checksum_failed")
+        inconsistencies.append({
+            "field"      : "mrz",
+            "description": "MRZ checksum failed — possible tampering",
+        })
+    if inconsistencies and "mrz_mismatch" not in flags:
+        if any(
+            (str(inc.get("field", "")).lower() == "mrz"
+             or "mrz" in str(inc.get("description", "")).lower())
+            for inc in inconsistencies
+        ):
+            if "mrz_checksum_failed" not in flags:
+                flags.append("mrz_mismatch")
 
     return {
-        "mrz_fields": mrz_output,
-
         "agent_fields": {
             "source"         : backend.__class__.__name__,
             "document_type"  : doc_type,
             "fields"         : agent_fields,
-            "inconsistencies": agent_result.get("inconsistencies", []),
+            "inconsistencies": inconsistencies,
             "confidence"     : agent_result.get("confidence"),
             "verdict"        : agent_result.get("verdict"),
             "notes"          : agent_result.get("notes")
@@ -264,11 +279,10 @@ def analyze(output: PipelineOutput,
         "result": {
             "document_type"  : doc_type,
             "fields"         : agent_fields,
-            "extractions"    : extractions,
-            "inconsistencies": agent_result.get("inconsistencies", []),
+            "inconsistencies": inconsistencies,
+            "flags"          : flags,
             "verdict"        : agent_result.get("verdict"),
             "confidence"     : agent_result.get("confidence"),
-            "mrz_valid"      : mrz_valid,
             "source"         : output.source,
             "confidence_avg" : output.confidence_avg
         }

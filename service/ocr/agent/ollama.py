@@ -16,7 +16,7 @@ class OllamaBackend(LLMBackend):
             "stream" : False,
             "options": {
                 "temperature": 0.0,
-                "num_predict": 612
+                "num_predict": 800
             }
         })
         response.raise_for_status()
