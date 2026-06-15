@@ -10,6 +10,8 @@ from service.ocr.agent.base import LLMBackend
 from service.ocr.agent.ollama import OllamaBackend
 from service.ocr.visualizer import visualize_matplotlib, visualize_template_match, visualize_agent_extraction
 from service.ocr.template_matcher import load_templates, match as match_template, align_to_template
+from service.ocr.preclassifier import classify as preclassify
+from service.ocr import matching
 
 from .models import Config, PipelineOutput
 from .engine import OCREngine, PaddleOCRAdapter, DotsOCRAdapter, DolphinOCRAdapter, load_image
@@ -202,20 +204,96 @@ def _build_pipeline_output(english_lines, english_text, mrz, lines,
     )
 
 
+_MRZ_TYPE_TO_DOC: dict[str, str] = {"TD3": "passport", "MRV-A": "visa", "MRV-B": "visa"}
+
+# Cuando Qdrant no tiene un template específico, estos doc_family
+# mapean a un template genérico (si existe en templates/).
+_DOC_FAMILY_FALLBACK: dict[str, str] = {
+    "proof_of_address": "proof_of_address",
+    "identity_card":    "identity_card",
+    "identity_photo":   "identity_photo",
+}
+
+
+def _resolve_document_type(image, lines: list, config: Config) -> str | None:
+    """Identify document type via preclassifier → Qdrant → MRZ shortcut → doc_family fallback."""
+    preclass = preclassify(image, lines)
+    print(
+        f"[OCR] preclassifier: family={preclass.doc_family} "
+        f"mrz_type={preclass.mrz_type} country={preclass.country_iso} "
+        f"confidence={preclass.confidence:.2f}"
+    )
+
+    # 1 ── Qdrant vector match (específico por emisor/país/edición)
+    if not config.disable_vector_match and matching.is_available():
+        query_text = matching.serialize_for_query(preclass, lines)
+        vector     = matching.embed(query_text, config.embedding_url, config.embedding_model)
+        if vector:
+            filters = {
+                "doc_family":  preclass.doc_family if preclass.doc_family != "unknown" else None,
+                "mrz_type":    preclass.mrz_type,
+                "country_iso": preclass.country_iso,
+            }
+            hits = matching.search(
+                config.qdrant_url, config.qdrant_collection, vector,
+                filters=filters, limit=1, score_threshold=config.match_threshold,
+            )
+            if hits:
+                doc_type = hits[0]["payload"].get("document_type")
+                if doc_type:
+                    print(f"[OCR] qdrant match: {doc_type} score={hits[0]['score']:.3f}")
+                    return doc_type
+
+    # 2 ── Shortcut por tipo de MRZ (passport, visa)
+    if preclass.mrz_type:
+        doc_type = _MRZ_TYPE_TO_DOC.get(preclass.mrz_type)
+        if doc_type:
+            print(f"[OCR] mrz shortcut: {preclass.mrz_type} → {doc_type}")
+            return doc_type
+
+    # 3 ── Fallback genérico por familia (proof_of_address, identity_card, etc.)
+    #      Usa el template genérico si existe en templates/, en lugar de ir directo al agente.
+    if preclass.doc_family in _DOC_FAMILY_FALLBACK:
+        doc_type = _DOC_FAMILY_FALLBACK[preclass.doc_family]
+        print(f"[OCR] doc_family fallback: {preclass.doc_family} → {doc_type}")
+        return doc_type
+
+    print("[OCR] document type could not be resolved")
+    return None
+
+
 def _run(image_path: str | Path,
          config: Config,
          backend: LLMBackend,
          document_type: str | None = None) -> dict:
 
-    engine    = _get_engine(config)
-    image     = load_image(Path(image_path))
+    engine     = _get_engine(config)
+    image_orig = load_image(Path(image_path))
+
+    # ── pasada 1: OCR rápido para identificar tipo de documento ───────────
+    # Solo se ejecuta cuando el caller no provee document_type.
+    if not document_type:
+        lines_probe = engine.extract(image_orig)
+        if not lines_probe:
+            return {"error": "no text extracted", "source": None}
+        confidence_avg = _avg_confidence(lines_probe)
+        if confidence_avg < config.confidence_threshold:
+            return {
+                "error"         : "low confidence — document quality insufficient",
+                "confidence_avg": round(confidence_avg, 4),
+                "source"        : None,
+            }
+        document_type = _resolve_document_type(image_orig, lines_probe, config)
+
     templates = load_templates(document_type) if document_type else []
 
-    # ── homography alignment (antes del OCR) ───────────────────────────────
+    # ── homography alignment ───────────────────────────────────────────────
+    image = image_orig
     if templates:
-        image, aligned_ok = align_to_template(image, templates[0])
+        image, aligned_ok = align_to_template(image_orig, templates[0])
         print(f"[OCR] homography alignment: {'ok' if aligned_ok else 'skipped (no ref image or too few keypoints)'}")
 
+    # ── pasada 2: OCR final sobre imagen alineada ─────────────────────────
     lines = engine.extract(image)
 
     if not lines:
