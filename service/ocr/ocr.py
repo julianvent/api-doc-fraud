@@ -1,5 +1,4 @@
 import json
-from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -16,7 +15,7 @@ from service.ocr import matching
 from .models import Config, PipelineOutput
 from .engine import OCREngine, PaddleOCRAdapter, DotsOCRAdapter, DolphinOCRAdapter, load_image
 from .language import filter_latin
-from .normalizer import normalize_fields
+from .normalizer import normalize_fields, normalize_date
 from .mrz import detect
 
 
@@ -90,28 +89,6 @@ def _mrz_to_dict(mrz) -> dict:
     })
 
 
-_DATE_PARSE_FORMATS = [
-    "%Y-%m-%d",
-    "%d/%m/%Y",
-    "%d-%m-%Y",
-    "%Y/%m/%d",
-    "%y%m%d",
-    "%Y%m%d",
-]
-
-
-def _to_ddmmyyyy(value: str) -> str:
-    if not value:
-        return value
-    clean = str(value).strip()
-    for fmt in _DATE_PARSE_FORMATS:
-        try:
-            return datetime.strptime(clean, fmt).strftime("%d/%m/%Y")
-        except ValueError:
-            continue
-    return value
-
-
 _ROW_GROUP_THRESHOLD = 0.03
 
 
@@ -140,8 +117,12 @@ def _row_order(lines: list) -> list:
 MRZ_MATCH_THRESHOLD = 90
 
 
+def _norm(value: str) -> str:
+    return (normalize_date(str(value)) or str(value)).strip().upper().replace(" ", "")
+
+
 def _compare_mrz(template_fields: dict, mrz, mapping: dict) -> list[dict]:
-    mrz_dict = _mrz_to_dict(mrz)
+    mrz_dict   = _mrz_to_dict(mrz)
     mismatches = []
     for template_key, mrz_key in mapping.items():
         tv = template_fields.get(template_key)
@@ -156,9 +137,7 @@ def _compare_mrz(template_fields: dict, mrz, mapping: dict) -> list[dict]:
             mv = mrz_dict.get(mrz_key)
             if not mv:
                 continue
-        tv_norm = _to_ddmmyyyy(str(tv)).strip().upper().replace(" ", "")
-        mv_norm = _to_ddmmyyyy(str(mv)).strip().upper().replace(" ", "")
-        similarity = fuzz.ratio(tv_norm, mv_norm)
+        similarity = fuzz.ratio(_norm(tv), _norm(mv))
         if similarity < MRZ_MATCH_THRESHOLD:
             mismatches.append({
                 "field"         : template_key,
@@ -167,6 +146,8 @@ def _compare_mrz(template_fields: dict, mrz, mapping: dict) -> list[dict]:
                 "similarity"    : similarity,
             })
     return mismatches
+
+
 
 
 
@@ -372,10 +353,7 @@ def _run(image_path: str | Path,
         template_vis_path = Path(config.ocr_output_dir) / f"{Path(image_path).stem}_template.png"
         visualize_template_match(image_bgr, lines, best_template, match_result, str(template_vis_path))
 
-        template_fields_out = {k: _to_ddmmyyyy(v) if v else v for k, v in template_fields.items()}
-        mrz_dict_out = None
-        if mrz:
-            mrz_dict_out = {k: _to_ddmmyyyy(v) if v else v for k, v in _mrz_to_dict(mrz).items()}
+        mrz_dict_out = _mrz_to_dict(mrz) if mrz else None
 
         return {
             "verdict"           : "verifiable",
@@ -383,7 +361,7 @@ def _run(image_path: str | Path,
             "document_type"     : document_type,
             "document_name"     : match_result.document_name,
             "template_available": True,
-            "fields"            : template_fields_out,
+            "fields"            : template_fields,
             "mrz"               : mrz_dict_out,
             "unmatched_fields"  : match_result.unmatched_fields,
         }
