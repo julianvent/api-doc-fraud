@@ -169,18 +169,18 @@ def _parse(lines: list[str]) -> MRZResult | None:
             print(f"MRZ fields error: {type(field_error).__name__}: {field_error}")
             return MRZResult(
                 valid=False, surname=None, given_names=None, country=None,
-                birth_date=None, expiry_date=None, number=None, sex=None,
+                date_of_birth=None, expiry_date=None, document_number=None, sex=None,
             )
 
         return MRZResult(
-            valid       = is_valid,
-            surname     = getattr(f, "surname",       None),
-            given_names = getattr(f, "name", getattr(f, "names", getattr(f, "given_names", None))),
-            country     = getattr(f, "country",       None),
-            birth_date  = getattr(f, "birth_date",    None),
-            expiry_date = getattr(f, "expiry_date",   None),
-            number      = getattr(f, "document_number", getattr(f, "number", None)),
-            sex         = getattr(f, "sex",            None),
+            valid           = is_valid,
+            surname         = getattr(f, "surname",     None),
+            given_names     = getattr(f, "name", getattr(f, "names", getattr(f, "given_names", None))),
+            country         = getattr(f, "country",     None),
+            date_of_birth   = getattr(f, "birth_date",  None),
+            expiry_date     = getattr(f, "expiry_date", None),
+            document_number = getattr(f, "document_number", getattr(f, "number", None)),
+            sex             = getattr(f, "sex",         None),
         )
 
     except Exception as e:

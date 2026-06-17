@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import cv2
@@ -61,20 +60,34 @@ def _avg_confidence(lines: list) -> float:
     return sum(l.confidence for l in lines) / len(lines)
 
 
-_MRZ_MAPPINGS_PATH = Path(__file__).parent / "data" / "mrz_mappings.json"
-_mrz_mappings_cache: dict | None = None
+def _extract_issue_year(lines: list) -> int | None:
+    """Escanea las líneas del probe OCR buscando fechas candidatas a date_of_issue.
+    Heurística: de todas las fechas reconocidas que no sean futuras, toma la más
+    reciente (la de nacimiento suele ser la más antigua, la de expedición la segunda
+    más reciente, la de caducidad suele ser futura).
+    """
+    from datetime import datetime
+    current_year = datetime.now().year
+    found: list[int] = []
+    for line in lines:
+        normalized = normalize_date(line.text.strip())
+        if not normalized or normalized == line.text.strip():
+            continue  # normalize_date devolvió el original → no reconoció la fecha
+        try:
+            dt = datetime.strptime(normalized, "%d/%m/%Y")
+            if dt.year <= current_year:
+                found.append(dt.year)
+        except ValueError:
+            continue
+    if not found:
+        return None
+    # Excluye el mínimo (fecha de nacimiento) y toma el mayor restante
+    found_sorted = sorted(set(found))
+    candidates = found_sorted[1:] if len(found_sorted) > 1 else found_sorted
+    year = max(candidates)
+    print(f"[PROBE] fechas encontradas={found_sorted} → issue_year estimado={year}")
+    return year
 
-
-def _load_mrz_mappings() -> dict:
-    global _mrz_mappings_cache
-    if _mrz_mappings_cache is not None:
-        return _mrz_mappings_cache
-    try:
-        with open(_MRZ_MAPPINGS_PATH, "r", encoding="utf-8") as f:
-            _mrz_mappings_cache = json.load(f)
-    except Exception:
-        _mrz_mappings_cache = {}
-    return _mrz_mappings_cache
 
 
 def _mrz_to_dict(mrz) -> dict:
@@ -82,9 +95,9 @@ def _mrz_to_dict(mrz) -> dict:
         "surname"        : mrz.surname,
         "given_names"    : mrz.given_names,
         "country"        : mrz.country,
-        "date_of_birth"  : mrz.birth_date,
+        "date_of_birth"  : mrz.date_of_birth,
         "date_of_expiry" : mrz.expiry_date,
-        "document_number": mrz.number,
+        "document_number": mrz.document_number,
         "sex"            : mrz.sex,
     })
 
@@ -121,26 +134,28 @@ def _norm(value: str) -> str:
     return (normalize_date(str(value)) or str(value)).strip().upper().replace(" ", "")
 
 
-def _compare_mrz(template_fields: dict, mrz, mapping: dict) -> list[dict]:
+_MRZ_COMPARABLE_FIELDS = {"surname", "given_names", "date_of_birth", "expiry_date", "document_number", "sex", "country"}
+
+
+def _compare_mrz(template_fields: dict, mrz) -> list[dict]:
+    """Compara los campos del template contra el MRZ para las claves que existen en ambos."""
     mrz_dict   = _mrz_to_dict(mrz)
     mismatches = []
-    for template_key, mrz_key in mapping.items():
-        tv = template_fields.get(template_key)
-        if not tv:
+    common     = set(template_fields) & set(mrz_dict) & _MRZ_COMPARABLE_FIELDS
+    print(f"[MRZ-CMP] campos comunes a comparar: {common}")
+    for key in common:
+        tv = template_fields.get(key)
+        mv = mrz_dict.get(key)
+        if not tv or not mv:
+            print(f"[MRZ-CMP] skip '{key}': tv={tv!r} mv={mv!r}")
             continue
-        if isinstance(mrz_key, list):
-            parts = [mrz_dict.get(k) for k in mrz_key]
-            if not all(parts):
-                continue
-            mv = " ".join(str(p) for p in parts)
-        else:
-            mv = mrz_dict.get(mrz_key)
-            if not mv:
-                continue
-        similarity = fuzz.ratio(_norm(tv), _norm(mv))
+        tv_n, mv_n = _norm(tv), _norm(mv)
+        similarity = fuzz.ratio(tv_n, mv_n)
+        status = "MISMATCH" if similarity < MRZ_MATCH_THRESHOLD else "ok"
+        print(f"[MRZ-CMP] {status} '{key}': ocr={tv_n!r} mrz={mv_n!r} sim={similarity}")
         if similarity < MRZ_MATCH_THRESHOLD:
             mismatches.append({
-                "field"         : template_key,
+                "field"         : key,
                 "template_value": tv,
                 "mrz_value"     : mv,
                 "similarity"    : similarity,
@@ -265,8 +280,11 @@ def _run(image_path: str | Path,
                 "source"        : None,
             }
         document_type = _resolve_document_type(image_orig, lines_probe, config)
+        issue_year    = _extract_issue_year(lines_probe)
+    else:
+        issue_year = None
 
-    templates = load_templates(document_type) if document_type else []
+    templates = load_templates(document_type, issue_year) if document_type else []
 
     # ── homography alignment ───────────────────────────────────────────────
     image = image_orig
@@ -295,6 +313,7 @@ def _run(image_path: str | Path,
             ((t, match_template(lines, t)) for t in templates),
             key=lambda pair: pair[1].match_score,
         )
+        print(f"[TMPL] document_type={document_type!r} match_score={match_result.match_score:.3f} matched={match_result.matched}")
 
         if not match_result.matched:
             return {
@@ -314,31 +333,39 @@ def _run(image_path: str | Path,
             ordered = _row_order(field_lines)
             template_fields[key] = " ".join(l.text.strip() for l in ordered).strip()
         template_fields = normalize_fields(template_fields)
+        print(f"[TMPL] extracted fields: {template_fields}")
 
         english_lines = filter_latin(lines)
 
         null_fields = [k for k, v in template_fields.items() if not v]
         if null_fields:
+            print(f"[TMPL] null fields → asking VLM: {null_fields}")
             filled = fill_missing_fields(english_lines, backend, null_fields)
             for k, v in filled.items():
                 if v:
                     template_fields[k] = v
             template_fields = normalize_fields(template_fields)
+            print(f"[TMPL] fields after VLM fill: {template_fields}")
 
         mrz = detect(lines)
+        print(f"[MRZ] detected={mrz is not None} valid={mrz.valid if mrz else 'N/A'}")
+        if mrz:
+            print(f"[MRZ] raw → surname={mrz.surname!r} given={mrz.given_names!r} "
+                  f"dob={mrz.date_of_birth!r} expiry={mrz.expiry_date!r} "
+                  f"num={mrz.document_number!r} country={mrz.country!r}")
 
-        mapping = _load_mrz_mappings().get(document_type, {})
-        if mrz and mrz.valid and mapping:
-            mismatches = _compare_mrz(template_fields, mrz, mapping)
+        mrz_flags: list[str] = []
+        mismatches: list[dict] = []
+        if mrz:
+            if not mrz.valid:
+                mrz_flags.append("mrz_checksum_failed")
+                print("[MRZ-CMP] MRZ checksum invalid — comparando de todas formas")
+            mismatches = _compare_mrz(template_fields, mrz)
+            print(f"[MRZ-CMP] mismatches found: {len(mismatches)}")
             if mismatches:
-                return {
-                    "verdict"           : "unverifiable",
-                    "flags"             : ["mrz_mismatch"],
-                    "match_score"       : match_result.match_score,
-                    "document_type"     : document_type,
-                    "template_available": True,
-                    "mismatches"        : mismatches,
-                }
+                mrz_flags.append("mrz_mismatch")
+        else:
+            print("[MRZ-CMP] skipped: no MRZ detected")
 
         output = _build_pipeline_output(
             lines,
@@ -355,8 +382,9 @@ def _run(image_path: str | Path,
 
         mrz_dict_out = _mrz_to_dict(mrz) if mrz else None
 
-        return {
-            "verdict"           : "verifiable",
+        verdict = "unverifiable" if "mrz_mismatch" in mrz_flags else "verifiable"
+        result  = {
+            "verdict"           : verdict,
             "match_score"       : match_result.match_score,
             "document_type"     : document_type,
             "document_name"     : match_result.document_name,
@@ -365,6 +393,11 @@ def _run(image_path: str | Path,
             "mrz"               : mrz_dict_out,
             "unmatched_fields"  : match_result.unmatched_fields,
         }
+        if mrz_flags:
+            result["flags"] = mrz_flags
+        if mismatches:
+            result["mismatches"] = mismatches
+        return result
 
     # ── fallback path ──────────────────────────────────────────────────────
     english_lines = filter_latin(lines)

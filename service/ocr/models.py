@@ -1,10 +1,7 @@
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional
 import os
 import numpy as np
-
-_BASE = Path(__file__).parent
 
 
 @dataclass
@@ -12,8 +9,7 @@ class Config:
     confidence_threshold : float = 0.60
     ollama_url           : str   = "http://localhost:11434/api/generate"
     ollama_model         : str   = "qwen2.5:7b"
-    document_fields_path : str   = str(_BASE / "data" / "document_fields.json")
-    ocr_output_dir       : str   = "service/ocr/output" 
+    ocr_output_dir       : str   = "service/ocr/output"
 
     # Change between engines
     #   OCR_ENGINE=paddle  uvicorn main:app --reload  ← default
@@ -70,9 +66,9 @@ class MRZResult:
     surname     : str
     given_names : str
     country     : str
-    birth_date  : str
+    date_of_birth  : str
     expiry_date : str
-    number      : str
+    document_number      : str
     sex         : str
 
 

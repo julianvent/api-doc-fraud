@@ -19,9 +19,9 @@ def _mrz_to_dict(mrz: MRZResult) -> dict:
         "surname"         : mrz.surname,
         "given_names"     : mrz.given_names,
         "country"         : mrz.country,
-        "date_of_birth"   : mrz.birth_date,
+        "date_of_birth"   : mrz.date_of_birth,
         "date_of_expiry"  : mrz.expiry_date,
-        "document_number" : mrz.number,
+        "document_number" : mrz.document_number,
         "sex"             : mrz.sex
     }
     return normalize_fields({k: v for k, v in raw.items() if v})

@@ -343,9 +343,9 @@ def print_report(output: PipelineOutput, agent_result: dict):
         print(f"  Surname      : {output.mrz.surname}")
         print(f"  Given names  : {output.mrz.given_names}")
         print(f"  Country      : {output.mrz.country}")
-        print(f"  Birth date   : {output.mrz.birth_date}")
+        print(f"  Birth date   : {output.mrz.date_of_birth}")
         print(f"  Expiry date  : {output.mrz.expiry_date}")
-        print(f"  Number       : {output.mrz.number}")
+        print(f"  Document number       : {output.mrz.document_number}")
         print(f"  Sex          : {output.mrz.sex}")
 
     print(f"\n── AGENT RESULT ─────────────────────────────────────────")
