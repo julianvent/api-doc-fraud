@@ -29,8 +29,10 @@ from api.v1.schema.document_template import (
 )
 from api.v1.schema.template_confirm import ConfirmTemplateRequest
 from api.v1.schema.template_generate import (
+    BBoxRegion,
     FieldSuggestion,
     GenerateResponse,
+    OCRElement,
     OCRLine,
     PreclassPayload,
 )
@@ -45,8 +47,33 @@ from service.template_ocr import heuristics, scan_cache
 
 log = get_logger(__name__)
 
-TEMPLATES_DIR  = Path(OCRConfig().templates_dir)
+TEMPLATES_DIR       = Path(OCRConfig().templates_dir)
 TEMPLATE_IMAGES_DIR = Path("template")
+TEMPLATES_JSON_DIR  = Path("templates_json")
+
+
+# Lazy singleton for DotsOCRAdapter — loading the model is expensive.
+_dots_engine_instance = None
+
+
+def _get_dots_engine():
+    global _dots_engine_instance
+    if _dots_engine_instance is None:
+        from service.ocr.engine import DotsOCRAdapter
+        _dots_engine_instance = DotsOCRAdapter(OCRConfig())
+    return _dots_engine_instance
+
+
+def _normalize_bbox_to_region(bbox: "np.ndarray", w: int, h: int) -> dict:
+    """Convert a 4-point pixel bbox [[x,y],...] to a normalised {x1,y1,x2,y2} dict."""
+    xs = bbox[:, 0]
+    ys = bbox[:, 1]
+    return {
+        "x1": float(xs.min() / w),
+        "y1": float(ys.min() / h),
+        "x2": float(xs.max() / w),
+        "y2": float(ys.max() / h),
+    }
 
 
 # ─────────────────────────────────────────── filename helpers
@@ -119,8 +146,8 @@ def generate_template(
     mode: str,
     expected_fields: Optional[list[dict]] = None,
 ) -> GenerateResponse:
-    if mode not in {"auto", "manual"}:
-        raise HTTPException(status_code=422, detail="mode must be 'auto' or 'manual'")
+    if mode not in {"auto", "manual", "dots"}:
+        raise HTTPException(status_code=422, detail="mode must be 'auto', 'manual', or 'dots'")
     if mode == "manual" and not expected_fields:
         raise HTTPException(
             status_code=422,
@@ -158,6 +185,66 @@ def generate_template(
     np_img   = _ensure_rgb(processed_pages[0].image)
     h, width = np_img.shape[:2]
 
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=scan_cache.get_ttl_seconds())
+
+    # ── dots mode: DotsOCR returns all text elements with spatial coordinates.
+    # The client receives the raw element list and assigns label/value roles
+    # in the UI; no automatic field pairing is performed here.
+    if mode == "dots":
+        try:
+            dots_engine = _get_dots_engine()
+        except Exception as e:
+            log.error("DotsOCR init failed: %s: %s", type(e).__name__, e)
+            raise HTTPException(
+                status_code=500,
+                detail=f"DotsOCR engine unavailable: {e}",
+            ) from e
+
+        lines = dots_engine.extract(np_img)
+
+        from service.template_ocr.element_classifier import classify_elements
+
+        elements_payload = classify_elements([
+            {
+                "id":       i,
+                "text":     line.text,
+                "category": getattr(line, "category", None) or "Text",
+                "bbox":     _normalize_bbox_to_region(line.bbox, width, h),
+            }
+            for i, line in enumerate(lines)
+        ])
+
+        scan_cache.save_elements(generate_id, elements_payload)
+        scan_cache.save_preprocessed_image(generate_id, np_img)
+
+        ocr_elements = [
+            OCRElement(
+                id       = e["id"],
+                text     = e["text"],
+                category = e["category"],
+                bbox     = BBoxRegion(**e["bbox"]),
+                role     = e.get("role", "unknown"),
+            )
+            for e in elements_payload
+        ]
+
+        preclass = preclassify(np_img, lines)
+
+        return GenerateResponse(
+            generate_id        = generate_id,
+            expires_at         = expires_at,
+            image_dims         = (int(width), int(h)),
+            preclass           = PreclassPayload(
+                doc_family  = preclass.doc_family,
+                country_iso = preclass.country_iso,
+                mrz_type    = preclass.mrz_type,
+                confidence  = preclass.confidence,
+            ),
+            qr_config          = _detect_qr(np_img),
+            ocr_elements       = ocr_elements,
+        )
+
+    # ── auto / manual mode: existing heuristic-based suggestion flow.
     config = OCRConfig()
     engine = _get_engine(config)
     lines  = engine.extract(np_img)
@@ -192,8 +279,6 @@ def generate_template(
         )
         for i, line in enumerate(lines)
     ]
-
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=scan_cache.get_ttl_seconds())
 
     return GenerateResponse(
         generate_id        = generate_id,
@@ -230,6 +315,14 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
             ),
         )
 
+    # Load auxiliary dots-mode data first (before deleting the scan cache entry).
+    elements_by_id: dict[int, dict] = {}
+    ext = "jpg"
+    if req.generate_id:
+        cached_elements = scan_cache.load_elements(req.generate_id)
+        if cached_elements:
+            elements_by_id = {e["id"]: e for e in cached_elements}
+
     img_path: Optional[str] = None
     if req.generate_id:
         cached = scan_cache.load(req.generate_id)
@@ -242,7 +335,21 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
         img_path = _persist_template_image(cached, slug, ext)
         scan_cache.delete(req.generate_id)
 
-    fields_payload = [f.model_dump() for f in req.fields]
+    # Build the fields list, resolving element IDs to spatial regions where
+    # provided. label_element_id / value_element_id are not persisted.
+    _coord_fields = {"label_element_id", "value_element_id"}
+    fields_payload = []
+    for f in req.fields:
+        fd = f.model_dump(exclude=_coord_fields)
+        if f.label_element_id is not None:
+            elem = elements_by_id.get(f.label_element_id)
+            if elem:
+                fd["label_region"] = elem["bbox"]
+        if f.value_element_id is not None:
+            elem = elements_by_id.get(f.value_element_id)
+            if elem:
+                fd["value_region"] = elem["bbox"]
+        fields_payload.append(fd)
 
     data = {
         "schema_version": 2,
@@ -266,12 +373,40 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
     TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # Write to the per-template folder (enriched copy with coordinates).
+    _persist_templates_json(slug, ext, data, req.generate_id)
+
+    # Clean up any remaining dots-mode cache files.
+    if req.generate_id:
+        scan_cache.delete_dots_cache(req.generate_id)
+
     _index_template_in_qdrant(slug, data)
 
     return _data_to_detail(slug, data)
 
 
 # ─────────────────────────────────────────── helpers
+
+
+def _persist_templates_json(
+    slug: str,
+    ext: str,
+    data: dict,
+    generate_id: Optional[str],
+) -> None:
+    """Write enriched template JSON + preprocessed image to templates_json/{slug}/."""
+    import shutil
+
+    tj_dir = TEMPLATES_JSON_DIR / slug
+    tj_dir.mkdir(parents=True, exist_ok=True)
+    (tj_dir / "template.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    if generate_id:
+        preprocessed = scan_cache.path_for_preprocessed(generate_id)
+        if preprocessed and preprocessed.exists():
+            shutil.copy2(preprocessed, tj_dir / f"preprocessed.{ext}")
 
 
 def _persist_template_image(image_bytes: bytes, slug: str, ext: str) -> str:

@@ -4,10 +4,16 @@ A generate request stores the uploaded file under a UUID with its real
 extension (e.g. uuid.pdf, uuid.jpg) so downstream consumers — the preprocessor
 in particular — can decide PDF vs image based on the path. Old files are
 purged lazily on every load() / save() call.
+
+For the dots mode, two additional files are stored alongside the image:
+  {uuid}.elements.json  — DotsOCR element list with normalised bboxes
+  {uuid}_preprocessed.png — the preprocessed image array (PNG)
+These are cleaned up at confirm time or when the TTL expires.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
@@ -102,3 +108,69 @@ def purge_expired(ttl_seconds: int = _DEFAULT_TTL) -> int:
 
 def get_ttl_seconds() -> int:
     return _DEFAULT_TTL
+
+
+# ─────────────────────────────────────────────────────── dots-mode helpers
+
+
+def _elements_path(generate_id: str) -> Optional[Path]:
+    try:
+        safe = uuid.UUID(generate_id)
+    except (ValueError, TypeError):
+        return None
+    # Underscore prefix so this file is NOT picked up by _resolve_path's
+    # glob pattern "{uuid}.*", which only matches files named "{uuid}.ext".
+    return _cache_dir() / f"{safe}_elements.json"
+
+
+def _preprocessed_path(generate_id: str) -> Optional[Path]:
+    try:
+        safe = uuid.UUID(generate_id)
+    except (ValueError, TypeError):
+        return None
+    return _cache_dir() / f"{safe}_preprocessed.png"
+
+
+def save_elements(generate_id: str, elements: list[dict]) -> None:
+    path = _elements_path(generate_id)
+    if path is None:
+        return
+    path.write_text(json.dumps(elements, ensure_ascii=False), encoding="utf-8")
+
+
+def load_elements(generate_id: str) -> Optional[list[dict]]:
+    path = _elements_path(generate_id)
+    if path is None or not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def save_preprocessed_image(generate_id: str, img: "np.ndarray") -> Optional[Path]:
+    """Save the preprocessed (numpy RGB) image to cache as PNG. Returns the path."""
+    import cv2
+    import numpy as np
+
+    path = _preprocessed_path(generate_id)
+    if path is None:
+        return None
+    bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if img.ndim == 3 else img
+    cv2.imwrite(str(path), bgr)
+    return path
+
+
+def path_for_preprocessed(generate_id: str) -> Optional[Path]:
+    """Returns the on-disk path of the cached preprocessed image, or None."""
+    path = _preprocessed_path(generate_id)
+    if path is None or not path.exists():
+        return None
+    return path
+
+
+def delete_dots_cache(generate_id: str) -> None:
+    """Remove both auxiliary dots-mode files for this generate_id."""
+    for p in [_elements_path(generate_id), _preprocessed_path(generate_id)]:
+        if p is not None and p.exists():
+            p.unlink(missing_ok=True)
