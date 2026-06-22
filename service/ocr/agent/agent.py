@@ -1,7 +1,10 @@
 import json
 import re
 
-from service.ocr.agent.base import LLMBackend
+from typing import Protocol
+
+class LLMBackend(Protocol):
+    def complete(self, prompt: str) -> str: ...
 from service.ocr.models import Config, MRZResult, PipelineOutput, TextLine
 from service.ocr.normalizer import normalize_fields
 
@@ -85,7 +88,7 @@ def _build_label_hints_section(label_hints: dict, missing_fields: list) -> str:
 def _build_prompt(output: PipelineOutput,
                   mrz_fields: dict,
                   mrz_valid: bool | None) -> str:
-    spatial_layout = _build_spatial_layout(output.english_lines)
+    spatial_layout = _build_spatial_layout(output.lines)
 
     mrz_section = ""
     if mrz_fields:

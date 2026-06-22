@@ -46,7 +46,15 @@ class Config:
         default_factory=lambda: float(os.getenv("MATCH_THRESHOLD", "0.75"))
     )
     disable_vector_match: bool = field(
-        default_factory=lambda: os.getenv("DISABLE_VECTOR_MATCH", "0") == "1"
+        default_factory=lambda: os.getenv("DISABLE_VECTOR_MATCH", "1") == "1"
+    )
+
+    # Vision backend (image → VLM for field extraction)
+    ollama_vision_url: str = field(
+        default_factory=lambda: os.getenv("OLLAMA_VISION_URL", "http://localhost:11434/api/generate")
+    )
+    ollama_vision_model: str = field(
+        default_factory=lambda: os.getenv("OLLAMA_VISION_MODEL", "llava")
     )
 
 
