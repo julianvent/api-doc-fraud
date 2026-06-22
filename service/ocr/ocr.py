@@ -1,7 +1,5 @@
 from pathlib import Path
-
-import cv2
-from rapidfuzz import fuzz
+from typing import Optional
 
 from service.ocr.agent import analyze, fill_missing_fields
 from service.ocr.agent.base import LLMBackend
@@ -16,6 +14,8 @@ from .engine import OCREngine, PaddleOCRAdapter, DotsOCRAdapter, DolphinOCRAdapt
 from .language import filter_latin
 from .normalizer import normalize_fields, normalize_date
 from .mrz import detect
+from .preclassifier import classify as preclassify, PreClassResult
+from .templates import iter_template_fields, load_template
 
 
 _ENGINES: dict[str, type[OCREngine]] = {
@@ -24,9 +24,9 @@ _ENGINES: dict[str, type[OCREngine]] = {
     "dolphin": DolphinOCRAdapter,
 }
 
-_engine_cache : dict[str, OCREngine] = {}
-_engine       : OCREngine | None     = None
-_backend      : OllamaBackend | None = None
+_engine_cache   : dict[str, OCREngine]          = {}
+_engine         : OCREngine | None              = None
+_vision_backend : OllamaVisionBackend | None    = None
 
 
 def _get_engine(config: Config) -> OCREngine:
@@ -41,17 +41,17 @@ def _get_engine(config: Config) -> OCREngine:
     return _engine
 
 
-def _get_backend(config: Config) -> OllamaBackend:
-    global _backend
-    if _backend is None:
-        _backend = OllamaBackend(config.ollama_url, config.ollama_model)
-    return _backend
+def _get_vision_backend(config: Config) -> OllamaVisionBackend:
+    global _vision_backend
+    if _vision_backend is None:
+        _vision_backend = OllamaVisionBackend(config.ollama_vision_url, config.ollama_vision_model)
+    return _vision_backend
 
 
 def warmup() -> None:
     config = Config()
     _get_engine(config)
-    _get_backend(config)
+    _get_vision_backend(config)
 
 
 def _avg_confidence(lines: list) -> float:
@@ -178,11 +178,8 @@ def _build_pipeline_output(english_lines, english_text, mrz, lines,
     mrz_verified   = mrz if (mrz and mrz.valid)     else None
     mrz_unverified = mrz if (mrz and not mrz.valid) else None
     source         = (
-        "template+mrz+gemma"    if (template_available and mrz_verified)   else
-        "template+mrz_partial"  if (template_available and mrz_unverified) else
-        "template+gemma"        if template_available                       else
-        "mrz+gemma"             if mrz_verified                            else
-        "mrz_partial+gemma"     if mrz_unverified                          else
+        "mrz+gemma"          if mrz_verified   else
+        "mrz_partial+gemma"  if mrz_unverified else
         "gemma"
     )
     return PipelineOutput(
@@ -253,7 +250,7 @@ def _resolve_document_type(image, lines: list, config: Config) -> str | None:
 
 def _run(image_path: str | Path,
          config: Config,
-         backend: LLMBackend,
+         vision_backend: OllamaVisionBackend,
          document_type: str | None = None) -> dict:
 
     engine     = _get_engine(config)
@@ -286,11 +283,14 @@ def _run(image_path: str | Path,
     lines = engine.extract(image)
 
     if not lines:
-        return {"error": "no text extracted", "source": None}
+        print(f"[OCR] no text extracted — aborting")
+        return {"error": "no text extracted", "source": None, "document_type": document_type}
 
     confidence_avg = _avg_confidence(lines)
+    print(f"[OCR] avg OCR confidence: {confidence_avg:.3f}")
 
     if confidence_avg < config.confidence_threshold:
+        print(f"[OCR] confidence below threshold ({config.confidence_threshold}) — aborting")
         return {
             "error"         : "low confidence — document quality insufficient",
             "confidence_avg": round(confidence_avg, 4),
@@ -404,20 +404,32 @@ def _run(image_path: str | Path,
     result["template_available"] = False
 
     agent_fields = result.get("result", {}).get("fields", {})
-    if agent_fields:
-        image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-        agent_vis_path = Path(config.ocr_output_dir) / f"{Path(image_path).stem}_agent.png"
-        visualize_agent_extraction(image_bgr, lines, agent_fields, str(agent_vis_path))
+    print(f"[OCR] final extracted fields: {len(agent_fields)} → {list(agent_fields.keys())}")
 
+    if isinstance(result, dict):
+        result["preclass"] = {
+            "doc_family":   preclass.doc_family,
+            "country_iso":  preclass.country_iso,
+            "mrz_type":     preclass.mrz_type,
+            "has_face":     preclass.has_face,
+            "aspect_class": preclass.aspect_class,
+            "confidence":   preclass.confidence,
+        }
+        result["match_source"] = match_source
+        if qdrant_hit:
+            result["matched_template_id"] = qdrant_hit["template_id"]
+            result["match_score_vector"] = qdrant_hit["score"]
+
+    print(f"[OCR] === done ===\n")
     return result
 
 
 def process(file_path: str | list,
             document_type: str | None = None) -> dict | list[dict]:
-    config  = Config()
-    backend = _get_backend(config)
+    config         = Config()
+    vision_backend = _get_vision_backend(config)
 
     if isinstance(file_path, list):
-        return [_run(fp, config, backend, document_type) for fp in file_path]
+        return [_run(fp, config, vision_backend, document_type) for fp in file_path]
 
-    return _run(file_path, config, backend, document_type)
+    return _run(file_path, config, vision_backend, document_type)

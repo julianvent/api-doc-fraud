@@ -1,10 +1,7 @@
-"""Forensic detectors — each produces a result dataclass for `PageReport`.
-
-A detector reads the page (and optional localizer output), runs its model,
-and returns a frozen result object plus any heatmap needed for visualization.
-Detectors never take verdict decisions — that is `detector.decision`'s job.
+"""Forensic detectors. Each returns a result dataclass + optional heatmap;
+scoring lives in `scoring.py`.
 """
 from .doctamper import DocTamperDetector
-from .mvssnet import MVSSNetDetector
+from .trufor import TruForDetector
 
-__all__ = ["DocTamperDetector", "MVSSNetDetector"]
+__all__ = ["DocTamperDetector", "TruForDetector"]

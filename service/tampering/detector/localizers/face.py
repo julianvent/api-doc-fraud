@@ -1,5 +1,4 @@
-"""Face localization via  YuNet detector.
-"""
+"""Face localization via YuNet detector."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,19 +13,14 @@ _HERE = Path(__file__).resolve().parent
 _WEIGHTS_DIR = _HERE.parent.parent / "weights"
 _DEFAULT_ONNX = _WEIGHTS_DIR / "face_detection_yunet_2023mar.onnx"
 
-# YuNet runs at its training resolution sweet spot around 320-640 on the long
-# side. Documents come in at arbitrary sizes; we downscale to this max side for
-# detection and unscale the bbox back to the original resolution.
+# Downscale input to this max side; YuNet's sweet spot is 320-640.
 _DETECTION_MAX_SIDE = 640
 
-# Faces with detector confidence below this are ignored. YuNet is well
-# calibrated and 0.6 rejects most false positives on busy document layouts.
 _SCORE_THRESHOLD = 0.6
 _NMS_THRESHOLD = 0.3
 _TOP_K = 50
 
-# Which document types are expected to carry a face. Used only to set
-# `FaceDetection.expected`; the verdict rule decides what to do with it.
+# Sets `FaceDetection.expected` only — does not gate detection.
 _FACE_EXPECTED_BY_TYPE = {
     DocumentType.PAN: True,
     DocumentType.INE: True,
@@ -50,8 +44,7 @@ class FaceLocalizer:
                 "face_detection_yunet and place it under weights/."
             )
         self._onnx_path = str(onnx_path)
-        # Input size is re-set per image via setInputSize; the constructor
-        # value is only used before the first detect() call.
+        # Input size is reset per image via setInputSize().
         self._detector = cv2.FaceDetectorYN.create(
             model=self._onnx_path,
             config="",
@@ -94,8 +87,7 @@ class FaceLocalizer:
         if faces is None or len(faces) == 0:
             return None, 0.0
 
-        # YuNet rows: [x, y, w, h, lm0_x, lm0_y, ..., lm4_x, lm4_y, confidence].
-        # Rank by detector confidence (last column) — highest wins.
+        # YuNet row layout: [x, y, w, h, landmarks..., confidence].
         best = max(faces, key=lambda row: row[-1])
         fx, fy, fw, fh = best[:4]
         inv = 1.0 / scale if scale > 0 else 1.0
@@ -112,7 +104,7 @@ _SINGLETON: Optional[FaceLocalizer] = None
 
 
 def build_face_localizer(onnx_path: Path = _DEFAULT_ONNX) -> FaceLocalizer:
-    """Return a process-wide FaceLocalizer, initialized on first call."""
+    """Process-wide singleton FaceLocalizer."""
     global _SINGLETON
     if _SINGLETON is None:
         _SINGLETON = FaceLocalizer(onnx_path=onnx_path)

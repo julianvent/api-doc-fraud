@@ -1,38 +1,37 @@
-"""Image-tampering detection module.
-
-Top-level surface:
-  * `analyze(path, engine, ...)` — run the full pipeline and get a
-    `PageReport` per page.
-  * `build_engine(...)` — build a low-level tampering engine (DocTamper, mock).
-  * `format_report(report)` — human-readable formatter for CLI / logs.
-  * Contract dataclasses (PageReport, Verdict, Region, ...).
+"""Tampering detection module. Produces a continuous `fraud_score` per page;
+the consumer applies its own accept/reject policy.
 """
-from .detectors import DocTamperDetector, MVSSNetDetector
+from .detectors import DocTamperDetector, TruForDetector
 from .engine import (
     DocTamperEngine,
-    MVSSNetEngine,
     MockEngine,
     TamperingEngine,
+    TruForEngine,
     build_engine,
-    build_mvssnet_engine,
+    build_trufor_engine,
 )
 from .loader import Page, load
 from .localizers import FaceLocalizer, build_face_localizer
 from .pipeline import analyze
 from .report import (
     Artifacts,
-    Confidence,
     DocTamperResult,
+    DocumentLocation,
     DocumentType,
     ExecutionMetadata,
     FaceDetection,
-    MVSSNetResult,
+    Finding,
     PageReport,
     Region,
-    Verdict,
+    Reliability,
+    RiskLabel,
+    Severity,
+    Timings,
+    TruForResult,
     Zone,
     format_report,
 )
+from .scoring import score
 from .thresholds import DEFAULT, Thresholds
 from .visualization import save_face_crop, save_heatmap, save_overlay
 
@@ -42,21 +41,25 @@ __all__ = [
     "TamperingEngine",
     "MockEngine",
     "DocTamperEngine",
-    "MVSSNetEngine",
+    "TruForEngine",
     "build_engine",
-    "build_mvssnet_engine",
+    "build_trufor_engine",
     "DocTamperDetector",
-    "MVSSNetDetector",
+    "TruForDetector",
     "FaceLocalizer",
     "build_face_localizer",
-    "Verdict",
-    "Confidence",
+    "RiskLabel",
+    "Reliability",
+    "Severity",
+    "Finding",
+    "Timings",
     "Zone",
     "DocumentType",
     "Region",
     "FaceDetection",
     "DocTamperResult",
-    "MVSSNetResult",
+    "DocumentLocation",
+    "TruForResult",
     "Artifacts",
     "ExecutionMetadata",
     "PageReport",
@@ -64,6 +67,7 @@ __all__ = [
     "Thresholds",
     "DEFAULT",
     "analyze",
+    "score",
     "save_heatmap",
     "save_overlay",
     "save_face_crop",

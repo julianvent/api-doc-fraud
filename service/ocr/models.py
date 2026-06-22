@@ -74,15 +74,12 @@ class MRZResult:
 
 @dataclass
 class PipelineOutput:
-    mrz_verified   : Optional[MRZResult]    # MRZ with valid checksum
-    mrz_unverified : Optional[MRZResult]    # MRZ detected but checksum failed
-    english_lines  : list[TextLine]
-    english_text   : str
+    document_type  : str
+    mrz_verified   : Optional[MRZResult]
+    mrz_unverified : Optional[MRZResult]
+    lines          : list[TextLine]
     source         : str
     confidence_avg : float
-    raw_lines      : list[TextLine]
-    template_available   : bool            = False
-    template_match_score : Optional[float] = None
 
     @property
     def mrz(self) -> Optional[MRZResult]:

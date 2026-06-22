@@ -11,7 +11,7 @@ from __future__ import annotations
 import shutil
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List
 
@@ -98,12 +98,18 @@ def verify(files: list[UploadFile], id: str, document_type: str | None = None) -
 
 
 def upload_template(
-    img: UploadFile, document_name: str, document_type: str
+    img: UploadFile, document_name: str, document_type: str,
+    country: str, edition: date, state: str | None = None
 ) -> DocumentTemplate:
     path = upload_file(file=img, path=TEMPLATE_PATH, id="test")
 
     new_template = template_ocr.upload(
-        document_name=document_name, document_type=document_type, img_path=path
+        document_type=document_type,
+        country=country,
+        state=state,
+        edition=edition,
+        document_name=document_name,
+        img_path=path.as_posix(),
     )
 
     return new_template
