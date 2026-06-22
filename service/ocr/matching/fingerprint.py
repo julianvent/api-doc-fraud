@@ -1,8 +1,14 @@
+from dataclasses import dataclass, field
 from typing import Optional
 
 from service.ocr.models import TextLine
 from service.ocr.preclassifier import PreClassResult
-from service.template_ocr.schema import Fingerprint
+
+
+@dataclass
+class Fingerprint:
+    layout_desc : Optional[str] = None
+    anchors     : list[str]     = field(default_factory=list)
 
 
 _TOP_LINES_FOR_QUERY = 12
@@ -16,11 +22,6 @@ def _top_lines(lines: list[TextLine], n: int) -> list[str]:
 
 
 def serialize_for_query(preclass: PreClassResult, lines: list[TextLine]) -> str:
-    """
-    Builds the text representation of an INCOMING document (verify path),
-    using signals from the preclassifier and the OCR layout.
-    This is the string that gets embedded and queried against Qdrant.
-    """
     parts = [f"family={preclass.doc_family}"]
     if preclass.mrz_type:
         parts.append(f"mrz_type={preclass.mrz_type}")
@@ -29,10 +30,9 @@ def serialize_for_query(preclass: PreClassResult, lines: list[TextLine]) -> str:
     if preclass.aspect_class:
         parts.append(f"aspect={preclass.aspect_class}")
 
-    header = "Document signals: " + ", ".join(parts)
+    header  = "Document signals: " + ", ".join(parts)
     anchors = _top_lines(lines, _TOP_LINES_FOR_QUERY)
-    body = "Top OCR lines:\n" + "\n".join(f"- {l}" for l in anchors) if anchors else ""
-
+    body    = "Top OCR lines:\n" + "\n".join(f"- {l}" for l in anchors) if anchors else ""
     return f"{header}\n{body}".strip()
 
 
@@ -40,10 +40,6 @@ def serialize_for_template(
     fingerprint: Optional[Fingerprint],
     preclass: Optional[PreClassResult] = None,
 ) -> str:
-    """
-    Builds the text representation of a TEMPLATE (upload path).
-    Uses the VLM-generated fingerprint (layout_desc + anchors) and optional preclass signals.
-    """
     parts = []
     if preclass:
         if preclass.doc_family:
@@ -53,9 +49,8 @@ def serialize_for_template(
         if preclass.country_iso:
             parts.append(f"country={preclass.country_iso}")
 
-    header = "Document signals: " + ", ".join(parts) if parts else ""
-
-    body_parts: list[str] = []
+    header     = "Document signals: " + ", ".join(parts) if parts else ""
+    body_parts : list[str] = []
     if fingerprint:
         if fingerprint.layout_desc:
             body_parts.append(f"Layout: {fingerprint.layout_desc}")

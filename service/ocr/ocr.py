@@ -1,14 +1,18 @@
 from pathlib import Path
 from typing import Optional
 
-from service.ocr.backends import OllamaVisionBackend
-from service.ocr.identifier import identify
-from service.ocr.extractor import extract_with_vision
+from service.ocr.agent import analyze, fill_missing_fields
+from service.ocr.agent.base import LLMBackend
+from service.ocr.agent.ollama import OllamaBackend
+from service.ocr.visualizer import visualize_matplotlib, visualize_template_match, visualize_agent_extraction
+from service.ocr.template_matcher import load_templates, match as match_template, align_to_template
+from service.ocr.preclassifier import classify as preclassify
+from service.ocr import matching
 
-from . import matching
-from .layout import build_spatial_layout
-from .models import Config, PipelineOutput, TextLine
+from .models import Config, PipelineOutput
 from .engine import OCREngine, PaddleOCRAdapter, DotsOCRAdapter, DolphinOCRAdapter, load_image
+from .language import filter_latin
+from .normalizer import normalize_fields, normalize_date
 from .mrz import detect
 from .preclassifier import classify as preclassify, PreClassResult
 from .templates import iter_template_fields, load_template
@@ -56,7 +60,121 @@ def _avg_confidence(lines: list) -> float:
     return sum(l.confidence for l in lines) / len(lines)
 
 
-def _build_pipeline_output(document_type, lines, mrz, confidence_avg) -> PipelineOutput:
+def _extract_issue_year(lines: list) -> int | None:
+    """Scan probe OCR lines for a date_of_issue candidate.
+    Heuristic: collect all non-future dates, drop the oldest (birth date),
+    take the largest remaining year (issue date). Expiry dates are future and ignored.
+    """
+    from datetime import datetime
+    current_year = datetime.now().year
+    found: list[int] = []
+    for line in lines:
+        normalized = normalize_date(line.text.strip())
+        if not normalized or normalized == line.text.strip():
+            continue  # normalize_date returned original — not a recognized date
+        try:
+            dt = datetime.strptime(normalized, "%d/%m/%Y")
+            if dt.year <= current_year:
+                found.append(dt.year)
+        except ValueError:
+            continue
+    if not found:
+        return None
+    found_sorted = sorted(set(found))
+    # drop the oldest date (birth) and take the largest remaining
+    candidates = found_sorted[1:] if len(found_sorted) > 1 else found_sorted
+    year = max(candidates)
+    print(f"[PROBE] dates found={found_sorted} → estimated issue_year={year}")
+    return year
+
+
+
+def _mrz_to_dict(mrz) -> dict:
+    return normalize_fields({
+        "surname"        : mrz.surname,
+        "given_names"    : mrz.given_names,
+        "country"        : mrz.country,
+        "date_of_birth"  : mrz.date_of_birth,
+        "date_of_expiry" : mrz.expiry_date,
+        "document_number": mrz.document_number,
+        "sex"            : mrz.sex,
+    })
+
+
+_ROW_GROUP_THRESHOLD = 0.03
+
+
+def _row_order(lines: list) -> list:
+    if not lines:
+        return lines
+    def _cy(l):
+        ys = [pt[1] for pt in l.bbox]
+        return (min(ys) + max(ys)) / 2
+    def _cx(l):
+        xs = [pt[0] for pt in l.bbox]
+        return (min(xs) + max(xs)) / 2
+    sorted_by_y = sorted(lines, key=_cy)
+    rows = [[sorted_by_y[0]]]
+    for line in sorted_by_y[1:]:
+        if _cy(line) - _cy(rows[-1][-1]) <= _ROW_GROUP_THRESHOLD:
+            rows[-1].append(line)
+        else:
+            rows.append([line])
+    ordered = []
+    for row in rows:
+        ordered.extend(sorted(row, key=_cx))
+    return ordered
+
+
+MRZ_MATCH_THRESHOLD = 90
+
+
+def _norm(value: str) -> str:
+    return (normalize_date(str(value)) or str(value)).strip().upper().replace(" ", "")
+
+
+_MRZ_COMPARABLE_FIELDS = {"surname", "given_names", "date_of_birth", "expiry_date", "document_number", "sex", "country"}
+
+
+def _compare_mrz(template_fields: dict, mrz) -> list[dict]:
+    mrz_dict   = _mrz_to_dict(mrz)
+    mismatches = []
+    common     = set(template_fields) & set(mrz_dict) & _MRZ_COMPARABLE_FIELDS
+    print(f"[MRZ-CMP] common fields to compare: {common}")
+    for key in common:
+        tv = template_fields.get(key)
+        mv = mrz_dict.get(key)
+        if not tv or not mv:
+            print(f"[MRZ-CMP] skip '{key}': tv={tv!r} mv={mv!r}")
+            continue
+        tv_n, mv_n = _norm(tv), _norm(mv)
+        similarity = fuzz.ratio(tv_n, mv_n)
+        status = "MISMATCH" if similarity < MRZ_MATCH_THRESHOLD else "ok"
+        print(f"[MRZ-CMP] {status} '{key}': ocr={tv_n!r} mrz={mv_n!r} sim={similarity}")
+        if similarity < MRZ_MATCH_THRESHOLD:
+            mismatches.append({
+                "field"         : key,
+                "template_value": tv,
+                "mrz_value"     : mv,
+                "similarity"    : similarity,
+            })
+    return mismatches
+
+
+
+
+
+def _save_visualization(image, output: PipelineOutput, image_path: Path, config: Config) -> None:
+    image_bgr  = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    output_dir = Path(config.ocr_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    visualize_matplotlib(image_bgr, output, str(output_dir / f"{image_path.stem}_result.png"))
+
+
+def _build_pipeline_output(english_lines, english_text, mrz, lines,
+                            confidence_avg,
+                            template_available=False,
+                            template_match_score=None) -> PipelineOutput:
     mrz_verified   = mrz if (mrz and mrz.valid)     else None
     mrz_unverified = mrz if (mrz and not mrz.valid) else None
     source         = (
@@ -65,95 +183,69 @@ def _build_pipeline_output(document_type, lines, mrz, confidence_avg) -> Pipelin
         "gemma"
     )
     return PipelineOutput(
-        document_type  = document_type,
-        mrz_verified   = mrz_verified,
-        mrz_unverified = mrz_unverified,
-        lines          = lines,
-        source         = source,
-        confidence_avg = round(confidence_avg, 4),
+        mrz_verified         = mrz_verified,
+        mrz_unverified       = mrz_unverified,
+        english_lines        = english_lines,
+        english_text         = english_text,
+        source               = source,
+        confidence_avg       = round(confidence_avg, 4),
+        raw_lines            = lines,
+        template_available   = template_available,
+        template_match_score = template_match_score,
     )
 
 
-def _document_type_from_preclass(preclass: PreClassResult) -> str | None:
-    if preclass.doc_family != "identity_mrz":
-        return None
-    mapping = {"TD3": "passport", "MRV-A": "visa", "MRV-B": "visa"}
-    return mapping.get(preclass.mrz_type)
+_MRZ_TYPE_TO_DOC: dict[str, str] = {"TD3": "passport", "MRV-A": "visa", "MRV-B": "visa"}
+
+# When Qdrant has no specific issuer template, map doc_family to a generic one (if it exists in templates/).
+_DOC_FAMILY_FALLBACK: dict[str, str] = {
+    "proof_of_address": "proof_of_address",
+    "identity_card":    "identity_card",
+    "identity_photo":   "identity_photo",
+}
 
 
-def _try_vector_match(
-    preclass: PreClassResult,
-    lines: list[TextLine],
-    config: Config,
-) -> Optional[dict]:
-    """
-    Returns {"document_type", "template_id", "score"} on hit, None on miss / disabled / error.
-    """
-    if config.disable_vector_match or not matching.is_available():
-        return None
-
-    query_text = matching.serialize_for_query(preclass, lines)
-    vector     = matching.embed(query_text, config.embedding_url, config.embedding_model)
-    if vector is None:
-        return None
-
-    filters = {
-        "doc_family":  preclass.doc_family if preclass.doc_family != "unknown" else None,
-        "mrz_type":    preclass.mrz_type,
-        "country_iso": preclass.country_iso,
-    }
-    hits = matching.search(
-        config.qdrant_url,
-        config.qdrant_collection,
-        vector,
-        filters         = filters,
-        limit           = 1,
-        score_threshold = config.match_threshold,
-    )
-    if not hits:
-        print(f"[OCR] qdrant: no match above threshold={config.match_threshold}")
-        return None
-
-    hit      = hits[0]
-    doc_type = hit["payload"].get("document_type")
-    if not doc_type:
-        return None
-
+def _resolve_document_type(image, lines: list, config: Config) -> str | None:
+    """Identify document type via preclassifier → Qdrant → MRZ shortcut → doc_family fallback."""
+    preclass = preclassify(image, lines)
     print(
-        f"[OCR] qdrant match: document_type='{doc_type}' "
-        f"score={hit['score']:.3f} template_id={hit.get('template_id')}"
+        f"[OCR] preclassifier: family={preclass.doc_family} "
+        f"mrz_type={preclass.mrz_type} country={preclass.country_iso} "
+        f"confidence={preclass.confidence:.2f}"
     )
-    return {
-        "document_type": doc_type,
-        "template_id":   hit.get("template_id"),
-        "score":         hit["score"],
-    }
 
+    if not config.disable_vector_match and matching.is_available():
+        query_text = matching.serialize_for_query(preclass, lines)
+        vector     = matching.embed(query_text, config.embedding_url, config.embedding_model)
+        if vector:
+            filters = {
+                "doc_family":  preclass.doc_family if preclass.doc_family != "unknown" else None,
+                "mrz_type":    preclass.mrz_type,
+                "country_iso": preclass.country_iso,
+            }
+            hits = matching.search(
+                config.qdrant_url, config.qdrant_collection, vector,
+                filters=filters, limit=1, score_threshold=config.match_threshold,
+            )
+            if hits:
+                doc_type = hits[0]["payload"].get("document_type")
+                if doc_type:
+                    print(f"[OCR] qdrant match: {doc_type} score={hits[0]['score']:.3f}")
+                    return doc_type
 
-def _resolve_document_type(
-    document_type: Optional[str],
-    preclass: PreClassResult,
-    image_path: Path,
-    lines: list[TextLine],
-    config: Config,
-    vision_backend: OllamaVisionBackend,
-) -> tuple[str, str, Optional[dict]]:
-    """
-    Returns (document_type, source, qdrant_hit_or_None).
-    source in {"caller", "qdrant", "preclass_shortcut", "vlm_identify"}.
-    """
-    if document_type:
-        return document_type, "caller", None
+    if preclass.mrz_type:
+        doc_type = _MRZ_TYPE_TO_DOC.get(preclass.mrz_type)
+        if doc_type:
+            print(f"[OCR] mrz shortcut: {preclass.mrz_type} → {doc_type}")
+            return doc_type
 
-    qdrant_hit = _try_vector_match(preclass, lines, config)
-    if qdrant_hit:
-        return qdrant_hit["document_type"], "qdrant", qdrant_hit
+    if preclass.doc_family in _DOC_FAMILY_FALLBACK:
+        doc_type = _DOC_FAMILY_FALLBACK[preclass.doc_family]
+        print(f"[OCR] doc_family fallback: {preclass.doc_family} → {doc_type}")
+        return doc_type
 
-    inferred = _document_type_from_preclass(preclass)
-    if inferred is not None:
-        return inferred, "preclass_shortcut", None
-
-    return identify(str(image_path), vision_backend), "vlm_identify", None
+    print("[OCR] document type could not be resolved")
+    return None
 
 
 def _run(image_path: str | Path,
@@ -161,26 +253,34 @@ def _run(image_path: str | Path,
          vision_backend: OllamaVisionBackend,
          document_type: str | None = None) -> dict:
 
-    image_path = Path(image_path)
-    print(f"\n[OCR] === processing {image_path.name} ===")
+    engine     = _get_engine(config)
+    image_orig = load_image(Path(image_path))
 
-    image  = load_image(image_path)
-    engine = _get_engine(config)
-    print(f"[OCR] image loaded, engine={config.ocr_engine}")
+    if not document_type:
+        lines_probe = engine.extract(image_orig)
+        if not lines_probe:
+            return {"error": "no text extracted", "source": None}
+        confidence_avg = _avg_confidence(lines_probe)
+        if confidence_avg < config.confidence_threshold:
+            return {
+                "error"         : "low confidence — document quality insufficient",
+                "confidence_avg": round(confidence_avg, 4),
+                "source"        : None,
+            }
+        document_type = _resolve_document_type(image_orig, lines_probe, config)
+        issue_year    = _extract_issue_year(lines_probe)
+    else:
+        issue_year = None
+
+    templates = load_templates(document_type, issue_year) if document_type else []
+
+    # ── homography alignment ───────────────────────────────────────────────
+    image = image_orig
+    if templates:
+        image, aligned_ok = align_to_template(image_orig, templates[0])
+        print(f"[OCR] homography alignment: {'ok' if aligned_ok else 'skipped (no ref image or too few keypoints)'}")
 
     lines = engine.extract(image)
-    print(f"[OCR] OCR extracted {len(lines)} lines")
-
-    preclass = preclassify(image, lines)
-    print(
-        f"[OCR] preclassifier: family={preclass.doc_family} mrz_type={preclass.mrz_type} "
-        f"country={preclass.country_iso} confidence={preclass.confidence:.2f}"
-    )
-
-    document_type, match_source, qdrant_hit = _resolve_document_type(
-        document_type, preclass, image_path, lines, config, vision_backend
-    )
-    print(f"[OCR] document_type='{document_type}' resolved via source='{match_source}'")
 
     if not lines:
         print(f"[OCR] no text extracted — aborting")
@@ -195,28 +295,113 @@ def _run(image_path: str | Path,
             "error"         : "low confidence — document quality insufficient",
             "confidence_avg": round(confidence_avg, 4),
             "source"        : None,
-            "document_type" : document_type,
         }
 
-    mrz = detect(lines)
-    if mrz:
-        print(f"[OCR] MRZ detected: valid={mrz.valid}")
-    else:
-        print(f"[OCR] no MRZ detected")
+    # ── template path ──────────────────────────────────────────────────────
+    if document_type and templates:
+        best_template, match_result = max(
+            ((t, match_template(lines, t)) for t in templates),
+            key=lambda pair: pair[1].match_score,
+        )
+        print(f"[TMPL] document_type={document_type!r} match_score={match_result.match_score:.3f} matched={match_result.matched}")
 
-    output = _build_pipeline_output(document_type, lines, mrz, confidence_avg)
+        if not match_result.matched:
+            return {
+                "verdict"            : "unverifiable",
+                "flags"              : ["layout_mismatch"],
+                "match_score"        : match_result.match_score,
+                "document_type"      : document_type,
+                "template_available" : True,
+                "message"            : "document layout does not match expected template",
+            }
 
-    template      = load_template(config.templates_dir, document_type)
-    template_path = Path(config.templates_dir) / f"{document_type}.json"
+        template_fields: dict[str, str | None] = {}
+        for key, field_lines in match_result.field_lines.items():
+            if not field_lines:
+                template_fields[key] = None
+                continue
+            ordered = _row_order(field_lines)
+            template_fields[key] = " ".join(l.text.strip() for l in ordered).strip()
+        template_fields = normalize_fields(template_fields)
+        print(f"[TMPL] extracted fields: {template_fields}")
 
-    if template is not None:
-        n_fields = len(iter_template_fields(template))
-        print(f"[OCR] template FOUND at {template_path} ({n_fields} fields) → VLM guided by template")
-    else:
-        print(f"[OCR] no template at {template_path} → VLM free extraction")
+        english_lines = filter_latin(lines)
 
-    spatial_layout = build_spatial_layout(lines)
-    result = extract_with_vision(str(image_path), vision_backend, output, spatial_layout, template)
+        null_fields = [k for k, v in template_fields.items() if not v]
+        if null_fields:
+            print(f"[TMPL] null fields → asking VLM: {null_fields}")
+            filled = fill_missing_fields(english_lines, backend, null_fields)
+            for k, v in filled.items():
+                if v:
+                    template_fields[k] = v
+            template_fields = normalize_fields(template_fields)
+            print(f"[TMPL] fields after VLM fill: {template_fields}")
+
+        mrz = detect(lines)
+        print(f"[MRZ] detected={mrz is not None} valid={mrz.valid if mrz else 'N/A'}")
+        if mrz:
+            print(f"[MRZ] raw → surname={mrz.surname!r} given={mrz.given_names!r} "
+                  f"dob={mrz.date_of_birth!r} expiry={mrz.expiry_date!r} "
+                  f"num={mrz.document_number!r} country={mrz.country!r}")
+
+        mrz_flags: list[str] = []
+        mismatches: list[dict] = []
+        if mrz:
+            if not mrz.valid:
+                mrz_flags.append("mrz_checksum_failed")
+                print("[MRZ-CMP] MRZ checksum invalid — comparing anyway")
+            mismatches = _compare_mrz(template_fields, mrz)
+            print(f"[MRZ-CMP] mismatches found: {len(mismatches)}")
+            if mismatches:
+                mrz_flags.append("mrz_mismatch")
+        else:
+            print("[MRZ-CMP] skipped: no MRZ detected")
+
+        output = _build_pipeline_output(
+            lines,
+            "\n".join(l.text for l in lines),
+            mrz, lines, confidence_avg,
+            template_available   = True,
+            template_match_score = match_result.match_score,
+        )
+        _save_visualization(image, output, Path(image_path), config)
+
+        image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        template_vis_path = Path(config.ocr_output_dir) / f"{Path(image_path).stem}_template.png"
+        visualize_template_match(image_bgr, lines, best_template, match_result, str(template_vis_path))
+
+        mrz_dict_out = _mrz_to_dict(mrz) if mrz else None
+
+        verdict = "unverifiable" if "mrz_mismatch" in mrz_flags else "verifiable"
+        result  = {
+            "verdict"           : verdict,
+            "match_score"       : match_result.match_score,
+            "document_type"     : document_type,
+            "document_name"     : match_result.document_name,
+            "template_available": True,
+            "fields"            : template_fields,
+            "mrz"               : mrz_dict_out,
+            "unmatched_fields"  : match_result.unmatched_fields,
+        }
+        if mrz_flags:
+            result["flags"] = mrz_flags
+        if mismatches:
+            result["mismatches"] = mismatches
+        return result
+
+    # ── fallback path ──────────────────────────────────────────────────────
+    english_lines = filter_latin(lines)
+    english_text  = "\n".join(l.text for l in english_lines)
+    mrz           = detect(english_lines)
+
+    output = _build_pipeline_output(
+        english_lines, english_text, mrz, lines, confidence_avg
+    )
+
+    _save_visualization(image, output, Path(image_path), config)
+
+    result                       = analyze(output, config, backend)
+    result["template_available"] = False
 
     agent_fields = result.get("result", {}).get("fields", {})
     print(f"[OCR] final extracted fields: {len(agent_fields)} → {list(agent_fields.keys())}")

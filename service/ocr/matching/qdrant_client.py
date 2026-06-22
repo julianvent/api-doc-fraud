@@ -1,5 +1,8 @@
+import logging
 import uuid
 from typing import Any, Optional
+
+log = logging.getLogger(__name__)
 
 
 def _try_import():
@@ -15,7 +18,6 @@ _CLIENT_CACHE: dict[str, Any] = {}
 
 
 def _coerce_id(point_id: Any) -> Any:
-    """Qdrant point IDs must be int or UUID string. Coerce arbitrary strings to a stable UUID5."""
     if isinstance(point_id, int):
         return point_id
     if isinstance(point_id, str):
@@ -33,12 +35,6 @@ def is_available() -> bool:
 
 
 def get_client(url: str) -> Optional[Any]:
-    """
-    Accepts three forms for `url`:
-      - http://host:port or https://host:port  → HTTP client (Docker / remote Qdrant)
-      - ":memory:"                              → in-memory local mode (ephemeral)
-      - any other string (e.g. "./qdrant_data") → local persistent file mode (no Docker)
-    """
     if url in _CLIENT_CACHE:
         return _CLIENT_CACHE[url]
     client_cls, _ = _try_import()
@@ -54,7 +50,7 @@ def get_client(url: str) -> Optional[Any]:
         _CLIENT_CACHE[url] = client
         return client
     except Exception as e:
-        print(f"[qdrant] connect failed: {type(e).__name__}: {e}")
+        log.error("qdrant connect failed at %s: %s: %s", url, type(e).__name__, e)
         return None
 
 
@@ -63,9 +59,7 @@ def _build_filter(filters: dict[str, Any], qmodels) -> Optional[Any]:
     for key, value in filters.items():
         if value is None:
             continue
-        conditions.append(
-            qmodels.FieldCondition(key=key, match=qmodels.MatchValue(value=value))
-        )
+        conditions.append(qmodels.FieldCondition(key=key, match=qmodels.MatchValue(value=value)))
     if not conditions:
         return None
     return qmodels.Filter(must=conditions)
@@ -79,18 +73,12 @@ def search(
     limit: int = 1,
     score_threshold: float = 0.75,
 ) -> list[dict]:
-    """
-    Returns list of hits like [{"template_id": int|str, "score": float, "payload": dict}].
-    Empty list if no hit, qdrant unavailable, or any error.
-    """
     client_cls, qmodels = _try_import()
     if client_cls is None:
         return []
-
     client = get_client(url)
     if client is None:
         return []
-
     try:
         q_filter = _build_filter(filters or {}, qmodels)
         response = client.query_points(
@@ -110,7 +98,7 @@ def search(
             for h in hits
         ]
     except Exception as e:
-        print(f"[qdrant] search failed: {type(e).__name__}: {e}")
+        log.error("qdrant search failed: %s: %s", type(e).__name__, e)
         return []
 
 
@@ -125,22 +113,16 @@ def upsert(
     client_cls, qmodels = _try_import()
     if client_cls is None:
         return False
-
     client = get_client(url)
     if client is None:
         return False
-
     try:
         existing = {c.name for c in client.get_collections().collections}
         if collection not in existing:
             client.create_collection(
                 collection_name = collection,
-                vectors_config  = qmodels.VectorParams(
-                    size     = vector_size,
-                    distance = qmodels.Distance.COSINE,
-                ),
+                vectors_config  = qmodels.VectorParams(size=vector_size, distance=qmodels.Distance.COSINE),
             )
-
         client.upsert(
             collection_name = collection,
             points          = [qmodels.PointStruct(
@@ -151,5 +133,5 @@ def upsert(
         )
         return True
     except Exception as e:
-        print(f"[qdrant] upsert failed: {type(e).__name__}: {e}")
+        log.error("qdrant upsert failed: %s: %s", type(e).__name__, e)
         return False
