@@ -61,10 +61,9 @@ def _avg_confidence(lines: list) -> float:
 
 
 def _extract_issue_year(lines: list) -> int | None:
-    """Escanea las líneas del probe OCR buscando fechas candidatas a date_of_issue.
-    Heurística: de todas las fechas reconocidas que no sean futuras, toma la más
-    reciente (la de nacimiento suele ser la más antigua, la de expedición la segunda
-    más reciente, la de caducidad suele ser futura).
+    """Scan probe OCR lines for a date_of_issue candidate.
+    Heuristic: collect all non-future dates, drop the oldest (birth date),
+    take the largest remaining year (issue date). Expiry dates are future and ignored.
     """
     from datetime import datetime
     current_year = datetime.now().year
@@ -72,7 +71,7 @@ def _extract_issue_year(lines: list) -> int | None:
     for line in lines:
         normalized = normalize_date(line.text.strip())
         if not normalized or normalized == line.text.strip():
-            continue  # normalize_date devolvió el original → no reconoció la fecha
+            continue  # normalize_date returned original — not a recognized date
         try:
             dt = datetime.strptime(normalized, "%d/%m/%Y")
             if dt.year <= current_year:
@@ -81,11 +80,11 @@ def _extract_issue_year(lines: list) -> int | None:
             continue
     if not found:
         return None
-    # Excluye el mínimo (fecha de nacimiento) y toma el mayor restante
     found_sorted = sorted(set(found))
+    # drop the oldest date (birth) and take the largest remaining
     candidates = found_sorted[1:] if len(found_sorted) > 1 else found_sorted
     year = max(candidates)
-    print(f"[PROBE] fechas encontradas={found_sorted} → issue_year estimado={year}")
+    print(f"[PROBE] dates found={found_sorted} → estimated issue_year={year}")
     return year
 
 
@@ -138,11 +137,10 @@ _MRZ_COMPARABLE_FIELDS = {"surname", "given_names", "date_of_birth", "expiry_dat
 
 
 def _compare_mrz(template_fields: dict, mrz) -> list[dict]:
-    """Compara los campos del template contra el MRZ para las claves que existen en ambos."""
     mrz_dict   = _mrz_to_dict(mrz)
     mismatches = []
     common     = set(template_fields) & set(mrz_dict) & _MRZ_COMPARABLE_FIELDS
-    print(f"[MRZ-CMP] campos comunes a comparar: {common}")
+    print(f"[MRZ-CMP] common fields to compare: {common}")
     for key in common:
         tv = template_fields.get(key)
         mv = mrz_dict.get(key)
@@ -202,8 +200,7 @@ def _build_pipeline_output(english_lines, english_text, mrz, lines,
 
 _MRZ_TYPE_TO_DOC: dict[str, str] = {"TD3": "passport", "MRV-A": "visa", "MRV-B": "visa"}
 
-# Cuando Qdrant no tiene un template específico, estos doc_family
-# mapean a un template genérico (si existe en templates/).
+# When Qdrant has no specific issuer template, map doc_family to a generic one (if it exists in templates/).
 _DOC_FAMILY_FALLBACK: dict[str, str] = {
     "proof_of_address": "proof_of_address",
     "identity_card":    "identity_card",
@@ -220,7 +217,6 @@ def _resolve_document_type(image, lines: list, config: Config) -> str | None:
         f"confidence={preclass.confidence:.2f}"
     )
 
-    # 1 ── Qdrant vector match (específico por emisor/país/edición)
     if not config.disable_vector_match and matching.is_available():
         query_text = matching.serialize_for_query(preclass, lines)
         vector     = matching.embed(query_text, config.embedding_url, config.embedding_model)
@@ -240,15 +236,12 @@ def _resolve_document_type(image, lines: list, config: Config) -> str | None:
                     print(f"[OCR] qdrant match: {doc_type} score={hits[0]['score']:.3f}")
                     return doc_type
 
-    # 2 ── Shortcut por tipo de MRZ (passport, visa)
     if preclass.mrz_type:
         doc_type = _MRZ_TYPE_TO_DOC.get(preclass.mrz_type)
         if doc_type:
             print(f"[OCR] mrz shortcut: {preclass.mrz_type} → {doc_type}")
             return doc_type
 
-    # 3 ── Fallback genérico por familia (proof_of_address, identity_card, etc.)
-    #      Usa el template genérico si existe en templates/, en lugar de ir directo al agente.
     if preclass.doc_family in _DOC_FAMILY_FALLBACK:
         doc_type = _DOC_FAMILY_FALLBACK[preclass.doc_family]
         print(f"[OCR] doc_family fallback: {preclass.doc_family} → {doc_type}")
@@ -266,8 +259,6 @@ def _run(image_path: str | Path,
     engine     = _get_engine(config)
     image_orig = load_image(Path(image_path))
 
-    # ── pasada 1: OCR rápido para identificar tipo de documento ───────────
-    # Solo se ejecuta cuando el caller no provee document_type.
     if not document_type:
         lines_probe = engine.extract(image_orig)
         if not lines_probe:
@@ -292,7 +283,6 @@ def _run(image_path: str | Path,
         image, aligned_ok = align_to_template(image_orig, templates[0])
         print(f"[OCR] homography alignment: {'ok' if aligned_ok else 'skipped (no ref image or too few keypoints)'}")
 
-    # ── pasada 2: OCR final sobre imagen alineada ─────────────────────────
     lines = engine.extract(image)
 
     if not lines:
@@ -359,7 +349,7 @@ def _run(image_path: str | Path,
         if mrz:
             if not mrz.valid:
                 mrz_flags.append("mrz_checksum_failed")
-                print("[MRZ-CMP] MRZ checksum invalid — comparando de todas formas")
+                print("[MRZ-CMP] MRZ checksum invalid — comparing anyway")
             mismatches = _compare_mrz(template_fields, mrz)
             print(f"[MRZ-CMP] mismatches found: {len(mismatches)}")
             if mismatches:

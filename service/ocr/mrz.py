@@ -3,34 +3,29 @@ from .models import TextLine, MRZResult
 
 MRZ_PATTERN = re.compile(r'^[A-Z0-9<]{30,44}$')
 
-# Longitudes exactas por formato MRZ
-_MRZ_LENGTHS   = (44, 36, 30)
-_LENGTH_SNAP   = 3   # tolerancia ±chars para aceptar una línea con ruido OCR
-_BOTTOM_BAND   = 0.25  # zona inferior del documento donde vive la MRZ (normalizado)
+_MRZ_LENGTHS = (44, 36, 30)
+_LENGTH_SNAP = 3    # ±char tolerance for OCR noise
+_BOTTOM_BAND = 0.25 # bottom fraction of the document where the MRZ lives (normalized)
 
-# Caracteres que OCR confunde frecuentemente con '<'
+# Characters OCR frequently misreads as '<'
 _OCR_FIXUPS = str.maketrans({
     "(": "<", "[": "<", "{": "<",
     ">": "<", "/": "<", "—": "<",
     "«": "<", "‹": "<", "＜": "<",
-    "«": "<",  # «
-    "‹": "<",  # ‹
 })
 
 
 def _normalize_mrz_text(text: str) -> str:
-    """Normaliza una línea OCR para compararla con formato MRZ."""
     return (
         text.strip()
         .upper()
         .translate(_OCR_FIXUPS)
-        .replace(" ", "")   # OCR a veces añade espacios dentro de la MRZ
+        .replace(" ", "")  # OCR sometimes inserts spaces inside MRZ sequences
     )
 
 
 def _snap_length(text: str) -> str | None:
-    """Ajusta el texto a la longitud MRZ más cercana si está dentro de tolerancia.
-    Retorna la línea paddeada/truncada, o None si está demasiado lejos."""
+    """Pad or truncate to the nearest valid MRZ length if within tolerance, else None."""
     n    = len(text)
     best = min(_MRZ_LENGTHS, key=lambda l: abs(l - n))
     if abs(best - n) <= _LENGTH_SNAP:
@@ -39,12 +34,10 @@ def _snap_length(text: str) -> str | None:
 
 
 def _is_mrz_candidate(text: str) -> bool:
-    """True si el texto (ya normalizado) parece una línea MRZ."""
     return bool(re.match(r'^[A-Z0-9<]{20,50}$', text)) and "<" in text
 
 
 def _line_bottom_center(line: TextLine) -> float | None:
-    """Centro Y normalizado (0-1) de la línea. None si no hay bbox."""
     if line.bbox is None or len(line.bbox) == 0:
         return None
     ys = [pt[1] for pt in line.bbox]
@@ -52,11 +45,9 @@ def _line_bottom_center(line: TextLine) -> float | None:
 
 
 def _find_lines(lines: list[TextLine]) -> list[str]:
-    # 1. Filtrar a la banda inferior del documento
     bottom = [l for l in lines if (_cy := _line_bottom_center(l)) is not None and _cy >= (1.0 - _BOTTOM_BAND)]
-    candidates_pool = bottom if bottom else lines  # fallback: usar todas
+    candidates_pool = bottom if bottom else lines  # fallback: use all lines
 
-    # 2. Normalizar y recolectar candidatas individuales
     raw: list[str] = []
     for line in candidates_pool:
         clean = _normalize_mrz_text(line.text)
@@ -65,15 +56,12 @@ def _find_lines(lines: list[TextLine]) -> list[str]:
             if snapped:
                 raw.append(snapped)
 
-    # 3. Intentar fusionar líneas partidas (OCR divide una línea MRZ en dos)
-    merged = _try_merge(raw)
-
-    # 4. Seleccionar el conjunto que forma un formato MRZ completo
+    merged = _try_merge(raw)  # merge lines split by OCR into two pieces
     return _pick_best(merged)
 
 
 def _try_merge(lines: list[str]) -> list[str]:
-    """Concatena pares de líneas cortas adyacentes que juntas forman una longitud MRZ válida."""
+    """Concatenate adjacent short lines that together form a valid MRZ length."""
     result = []
     i = 0
     while i < len(lines):
@@ -90,7 +78,7 @@ def _try_merge(lines: list[str]) -> list[str]:
 
 
 def _pick_best(candidates: list[str]) -> list[str]:
-    """Devuelve las líneas que forman un formato MRZ completo (TD3/MRV-A, TD2/MRV-B o TD1)."""
+    """Return lines that form a complete MRZ (TD3/MRV-A, TD2/MRV-B or TD1)."""
     td3  = [l for l in candidates if len(l) == 44]
     td2  = [l for l in candidates if len(l) == 36]
     td1  = [l for l in candidates if len(l) == 30]

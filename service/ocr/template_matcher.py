@@ -103,7 +103,7 @@ def load_template(document_type: str) -> dict | None:
 
 
 def _template_year(data: dict, path: Path) -> int | None:
-    """Extrae el año del template: primero del campo 'year' en el JSON, luego del nombre del archivo."""
+    """Extract template year: first from the 'year' JSON field, then from the filename."""
     if "year" in data:
         try:
             return int(data["year"])
@@ -115,9 +115,9 @@ def _template_year(data: dict, path: Path) -> int | None:
 
 
 def load_templates(document_type: str, issue_year: int | None = None) -> list[dict]:
-    """Carga templates del tipo dado. Si se provee issue_year, devuelve solo los
-    templates con año <= issue_year, ordenados del más reciente al más antiguo.
-    Si no hay issue_year, devuelve todos ordenados del más reciente al más antiguo."""
+    """Load templates of the given type. If issue_year is provided, returns only
+    templates with year <= issue_year, sorted most recent first.
+    Without issue_year, returns all templates sorted most recent first."""
     candidates = sorted(TEMPLATES_DIR.glob(f"{document_type}*.json"))
     with_year: list[tuple[int | None, dict]] = []
     for path in candidates:
@@ -131,7 +131,7 @@ def load_templates(document_type: str, issue_year: int | None = None) -> list[di
 
     if issue_year is not None:
         eligible = [(y, t) for y, t in with_year if y is None or y <= issue_year]
-        print(f"[TMPL] issue_year={issue_year} → templates elegibles: "
+        print(f"[TMPL] issue_year={issue_year} → eligible templates: "
               f"{[(y, t.get('document_name', '?')) for y, t in eligible]}")
         if eligible:
             eligible.sort(key=lambda x: x[0] or 0, reverse=True)

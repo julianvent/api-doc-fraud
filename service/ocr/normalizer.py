@@ -9,7 +9,7 @@ DATE_FORMATS = [
     "%d-%m-%y",     # 01-01-90
     "%d.%m.%Y",     # 01.01.1990
     "%d.%m.%y",     # 01.01.90
-    "%d %m %Y",     # 01 01 1990  ← OCR con espacios
+    "%d %m %Y",     # 01 01 1990 (space-separated OCR artifact)
     "%d %m %y",     # 01 01 90
     "%Y/%m/%d",     # 1990/01/01
     "%Y-%m-%d",     # 1990-01-01 (ISO)
@@ -36,11 +36,11 @@ DATE_FIELDS = {
 
 
 def normalize_date(value) -> str | None:
-    """Normaliza cualquier representación de fecha a dd/mm/yyyy.
-    Acepta str, datetime y date. Devuelve el valor original si no reconoce el formato."""
+    """Normalize any date representation to dd/mm/yyyy.
+    Accepts str, datetime and date. Returns the original value if the format is not recognized."""
     if value is None:
         return None
-    # objetos datetime/date — conversión directa sin pasar por str()
+    # datetime/date objects: format directly to avoid str() adding a time component
     if isinstance(value, (datetime, date)):
         return value.strftime("%d/%m/%Y")
     clean = str(value).strip().upper()
@@ -51,12 +51,11 @@ def normalize_date(value) -> str | None:
             return datetime.strptime(clean, fmt).strftime("%d/%m/%Y")
         except ValueError:
             continue
-    return str(value)  # no reconocido: devolver original
+    return str(value)  # unrecognized format: return original
 
 
 def normalize_fields(fields: dict) -> dict:
-    """Aplica normalize_date a todos los valores: si el valor no es una fecha
-    reconocible, normalize_date devuelve el original sin modificar."""
+    """Apply normalize_date to every value. Non-date values are returned unchanged."""
     result = {}
     for key, value in fields.items():
         if value is None:
