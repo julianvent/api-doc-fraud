@@ -25,14 +25,14 @@ class PreclassPayload(BaseModel):
 
 
 class FieldSuggestion(BaseModel):
-    key            : str
-    label          : str
-    type           : str
-    value_preview  : Optional[str]       = None
-    label_line_id  : Optional[int]       = None
-    value_line_ids : list[int]           = Field(default_factory=list)
-    confidence     : Literal["high", "medium", "low"]
-    source         : Literal["mrz", "regex", "spatial_match"]
+    key               : str
+    label             : str
+    type              : str
+    value_preview     : Optional[str]  = None
+    label_element_id  : Optional[str]  = None
+    value_element_ids : list[str]      = Field(default_factory=list)
+    confidence        : Literal["high", "medium", "low"]
+    source            : Literal["mrz", "regex", "spatial_match"]
 
 
 class BBoxRegion(BaseModel):

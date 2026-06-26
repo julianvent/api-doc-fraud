@@ -39,25 +39,25 @@ _LABEL_HAS_DIGITS = re.compile(r"\d")
 
 @dataclass
 class Suggestion:
-    key            : str
-    label          : str
-    type           : str
-    value_preview  : Optional[str]
-    label_line_id  : Optional[int]
-    value_line_ids : list[int]
-    confidence     : str   # "high" | "medium" | "low"
-    source         : str   # "mrz" | "regex" | "spatial_match"
+    key               : str
+    label             : str
+    type              : str
+    value_preview     : Optional[str]
+    label_element_id  : Optional[str]
+    value_element_ids : list[str]
+    confidence        : str   # "high" | "medium" | "low"
+    source            : str   # "mrz" | "regex" | "spatial_match"
 
     def to_dict(self) -> dict:
         return {
-            "key":             self.key,
-            "label":           self.label,
-            "type":            self.type,
-            "value_preview":   self.value_preview,
-            "label_line_id":   self.label_line_id,
-            "value_line_ids":  list(self.value_line_ids),
-            "confidence":      self.confidence,
-            "source":          self.source,
+            "key":               self.key,
+            "label":             self.label,
+            "type":              self.type,
+            "value_preview":     self.value_preview,
+            "label_element_id":  self.label_element_id,
+            "value_element_ids": list(self.value_element_ids),
+            "confidence":        self.confidence,
+            "source":            self.source,
         }
 
 
@@ -120,14 +120,14 @@ def suggest_from_mrz(mrz: Optional[MRZResult]) -> list[Suggestion]:
         if not value:
             continue
         out.append(Suggestion(
-            key            = key,
-            label          = label,
-            type           = ftype,
-            value_preview  = value,
-            label_line_id  = None,
-            value_line_ids = [],
-            confidence     = "high",
-            source         = "mrz",
+            key               = key,
+            label             = label,
+            type              = ftype,
+            value_preview     = value,
+            label_element_id  = None,
+            value_element_ids = [],
+            confidence        = "high",
+            source            = "mrz",
         ))
     return out
 
@@ -150,15 +150,17 @@ def suggest_from_regex(lines: list[TextLine]) -> list[Suggestion]:
             label_idx  = _find_label_for(idx, lines)
             label_text = lines[label_idx].text if label_idx is not None else key.replace("_", " ").title()
 
+            # TODO(Step 7): poblar con IDs de elemento al refactorizar heurísticos
+            # sobre DetectedElement. Por ahora quedan vacíos — enteros no pertenecen aquí.
             out.append(Suggestion(
-                key            = key,
-                label          = label_text,
-                type           = ftype,
-                value_preview  = match.group(0),
-                label_line_id  = label_idx,
-                value_line_ids = [idx],
-                confidence     = "medium",
-                source         = "regex",
+                key               = key,
+                label             = label_text,
+                type              = ftype,
+                value_preview     = match.group(0),
+                label_element_id  = None,
+                value_element_ids = [],
+                confidence        = "medium",
+                source            = "regex",
             ))
             break
     return out
@@ -201,15 +203,17 @@ def suggest_from_expected(
         else:
             confidence = "medium"
 
+        # TODO(Step 7): poblar con IDs de elemento al refactorizar heurísticos
+        # sobre DetectedElement. Por ahora quedan vacíos — enteros no pertenecen aquí.
         out.append(Suggestion(
-            key            = key,
-            label          = label,
-            type           = ftype,
-            value_preview  = lines[value_idx].text,
-            label_line_id  = best_idx,
-            value_line_ids = [value_idx],
-            confidence     = confidence,
-            source         = "spatial_match",
+            key               = key,
+            label             = label,
+            type              = ftype,
+            value_preview     = lines[value_idx].text,
+            label_element_id  = None,
+            value_element_ids = [],
+            confidence        = confidence,
+            source            = "spatial_match",
         ))
 
     return out
@@ -257,18 +261,18 @@ def enrich_with_ocr_positions(
     lines: list[TextLine],
 ) -> list[Suggestion]:
     """Best-effort: for suggestions that have a value_preview but no
-    value_line_ids, fuzzy-match the value against the OCR text and populate
-    the line IDs when a clear match is found.
+    value_element_ids, fuzzy-match the value against the OCR text and log
+    a match score for future Step-7 enrichment.
 
     Suggestions whose value cannot be located are returned UNCHANGED (with
-    empty line_ids) — the consumer can still surface them as text-only fields
-    and let the user accept or discard them in the confirm step."""
+    empty value_element_ids) — the consumer can still surface them as text-only
+    fields and let the user accept or discard them in the confirm step."""
     if not lines:
         return list(suggestions)
 
     out: list[Suggestion] = []
     for s in suggestions:
-        if s.value_line_ids or s.key in _ENRICH_SKIP_KEYS:
+        if s.value_element_ids or s.key in _ENRICH_SKIP_KEYS:
             out.append(s)
             continue
 
@@ -290,19 +294,19 @@ def enrich_with_ocr_positions(
             out.append(s)
             continue
 
-        label_idx = s.label_line_id
-        if label_idx is None:
-            label_idx = _find_label_for(best_idx, lines)
-
+        # TODO(Step 7): resolver best_idx contra DetectedElement.id (str) y
+        # poblar label_element_id / value_element_ids con IDs reales.
+        # Por ahora devolvemos la sugerencia con value_preview ya verificado pero
+        # sin IDs — enteros de línea no pertenecen a estos campos.
         out.append(Suggestion(
-            key            = s.key,
-            label          = s.label,
-            type           = s.type,
-            value_preview  = s.value_preview,
-            label_line_id  = label_idx,
-            value_line_ids = [best_idx],
-            confidence     = s.confidence,
-            source         = s.source,
+            key               = s.key,
+            label             = s.label,
+            type              = s.type,
+            value_preview     = s.value_preview,
+            label_element_id  = None,
+            value_element_ids = [],
+            confidence        = s.confidence,
+            source            = s.source,
         ))
 
     return out

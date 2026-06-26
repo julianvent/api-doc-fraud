@@ -263,9 +263,9 @@ def generate_template(
         suggestions.extend(heuristics.suggest_from_mrz(mrz_result))
         suggestions.extend(heuristics.suggest_from_expected(expected_fields or [], lines))
 
-    # Best-effort: populate value_line_ids / label_line_id for MRZ-derived
-    # suggestions so the client has the OCR coordinates if it wants to render
-    # an overlay or jump to the location at confirm time.
+    # Best-effort: populate value_element_ids / label_element_id for MRZ-derived
+    # suggestions so the client has the element IDs if it wants to render
+    # an overlay or jump to the location at confirm time. (Step 7: wire real IDs.)
     suggestions = heuristics.enrich_with_ocr_positions(suggestions, lines)
     suggestions = _dedupe_by_key(suggestions)
     anchors     = heuristics.extract_anchors(lines, image_height=np_img.shape[0])

@@ -4,11 +4,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class FieldSpec(BaseModel):
-    key      : str
-    label    : str
-    type     : str           = "text"
-    category : Optional[str] = None
-    required : bool          = False
+    key               : str
+    label             : str
+    type              : str           = "text"
+    category          : Optional[str] = None
+    required          : bool          = False
+    # Detection-first fields (Step 0). All optional so existing templates load unchanged.
+    # bbox is normalized 0–1 (persisted); runtime coords live in DetectedElement.bbox.
+    bbox              : Optional[list]  = None
+    value_element_ids : list[str]       = Field(default_factory=list)
+    label_element_id  : Optional[str]   = None
 
 
 class Fingerprint(BaseModel):
