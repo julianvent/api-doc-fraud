@@ -1,6 +1,9 @@
+import asyncio
+import json as _json
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, File, Form, Query, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
 
 from api.v1.schema.document_template import TemplateDetail, TemplateSummary
 from api.v1.schema.template_confirm import ConfirmTemplateRequest
@@ -11,6 +14,40 @@ from controller import template_controller
 
 
 router = APIRouter(prefix="/v1")
+
+
+async def _dots_sse_stream(
+    image: UploadFile,
+    expected_fields: Optional[list],
+) -> None:
+    # Send headers + first bytes immediately so every proxy/browser timer resets.
+    yield ": keepalive\n\n"
+
+    fut = asyncio.ensure_future(
+        asyncio.to_thread(
+            template_controller.generate_template,
+            image=image,
+            mode="dots",
+            expected_fields=expected_fields,
+        )
+    )
+
+    while not fut.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(fut), timeout=5.0)
+        except asyncio.TimeoutError:
+            yield ": keepalive\n\n"
+        except Exception:
+            break
+
+    try:
+        result: GenerateResponse = fut.result()
+        yield f"data: {result.model_dump_json()}\n\n"
+        yield "data: [DONE]\n\n"
+    except HTTPException as e:
+        yield f"event: error\ndata: {_json.dumps({'detail': e.detail})}\n\n"
+    except Exception as e:
+        yield f"event: error\ndata: {_json.dumps({'detail': str(e)})}\n\n"
 
 
 @router.get("/health")
@@ -45,10 +82,10 @@ async def get_template(template_id: str):
     return template_controller.get_template(template_id)
 
 
-@router.post("/templates/generate", response_model=GenerateResponse)
+@router.post("/templates/generate")
 async def generate_template(
     image: Annotated[UploadFile, File(description="Sample document image")],
-    mode: Annotated[str, Form(description="auto | manual")],
+    mode: Annotated[str, Form(description="auto | manual | dots")],
     expected_fields: Annotated[
         Optional[str],
         Form(description='JSON array of {key,label,type} — required when mode=manual'),
@@ -56,15 +93,21 @@ async def generate_template(
 ):
     parsed_expected = None
     if expected_fields:
-        import json
         try:
-            parsed_expected = json.loads(expected_fields)
+            parsed_expected = _json.loads(expected_fields)
             if not isinstance(parsed_expected, list):
                 raise ValueError("expected_fields must be a JSON array")
-        except (ValueError, json.JSONDecodeError) as e:
-            from fastapi import HTTPException
+        except (ValueError, _json.JSONDecodeError) as e:
             raise HTTPException(status_code=422, detail=f"invalid expected_fields: {e}")
-    return template_controller.generate_template(
+
+    if mode == "dots":
+        return StreamingResponse(
+            _dots_sse_stream(image=image, expected_fields=parsed_expected),
+            media_type="text/event-stream",
+        )
+
+    return await asyncio.to_thread(
+        template_controller.generate_template,
         image=image,
         mode=mode,
         expected_fields=parsed_expected,

@@ -32,3 +32,4 @@ DotsOCR/
 qdrant_storage/
 
 tmp/
+__pycache__
