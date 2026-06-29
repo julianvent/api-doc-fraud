@@ -12,8 +12,8 @@ class FieldSpec(BaseModel):
     # Detection-first fields (Step 0). All optional so existing templates load unchanged.
     # bbox is normalized 0–1 (persisted); runtime coords live in DetectedElement.bbox.
     bbox              : Optional[list]  = None
-    value_element_ids : list[str]       = Field(default_factory=list)
-    label_element_id  : Optional[str]   = None
+    value_element_ids : list[int]        = Field(default_factory=list)
+    label_element_id  : Optional[int]   = None
 
 
 class Fingerprint(BaseModel):

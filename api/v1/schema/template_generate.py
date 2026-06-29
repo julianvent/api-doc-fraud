@@ -29,8 +29,8 @@ class FieldSuggestion(BaseModel):
     label             : str
     type              : str
     value_preview     : Optional[str]  = None
-    label_element_id  : Optional[str]  = None
-    value_element_ids : list[str]      = Field(default_factory=list)
+    label_element_id  : Optional[int]  = None
+    value_element_ids : list[int]      = Field(default_factory=list)
     confidence        : Literal["high", "medium", "low"]
     source            : Literal["mrz", "regex", "spatial_match"]
 

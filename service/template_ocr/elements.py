@@ -14,7 +14,7 @@ class DetectedElement:
     # Precondición: bbox debe estar normalizado 0–1 (PaddleOCR ya lo garantiza).
     # DotsOCR/Dolphin devuelven píxeles absolutos y están fuera del alcance de Step 1.
     # Persisted bboxes (FieldSpec.bbox) usan el mismo espacio 0–1; conversión en Step 6.
-    id: str           # stable, e.g. "el_0" — assigned at detection, never a list index
+    id: int           # stable integer, assigned at detection
     text: str
     bbox: np.ndarray  # polygon of points, shape (N, 2), values in [0, 1]
     confidence: float
@@ -47,7 +47,7 @@ def textlines_to_elements(lines: list[TextLine]) -> list[DetectedElement]:
                 "Expected values in [0, 1]. DotsOCR/Dolphin are out of scope for Step 1."
             )
         elements.append(DetectedElement(
-            id=f"el_{i}",
+            id=i,
             text=line.text,
             bbox=bbox,
             confidence=line.confidence,

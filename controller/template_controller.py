@@ -321,7 +321,7 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
         )
 
     # Load auxiliary dots-mode data first (before deleting the scan cache entry).
-    elements_by_id: dict = {}
+    elements_by_id: dict[int, dict] = {}
     ext = "jpg"
     if req.generate_id:
         cached_elements = scan_cache.load_elements(req.generate_id)

@@ -43,8 +43,8 @@ class Suggestion:
     label             : str
     type              : str
     value_preview     : Optional[str]
-    label_element_id  : Optional[str]
-    value_element_ids : list[str]
+    label_element_id  : Optional[int]
+    value_element_ids : list[int]
     confidence        : str   # "high" | "medium" | "low"
     source            : str   # "mrz" | "regex" | "spatial_match"
 
@@ -294,10 +294,10 @@ def enrich_with_ocr_positions(
             out.append(s)
             continue
 
-        # TODO(Step 7): resolver best_idx contra DetectedElement.id (str) y
+        # TODO(Step 7): resolver best_idx contra DetectedElement.id (int) y
         # poblar label_element_id / value_element_ids con IDs reales.
         # Por ahora devolvemos la sugerencia con value_preview ya verificado pero
-        # sin IDs — enteros de línea no pertenecen a estos campos.
+        # sin IDs — se poblará al refactorizar heurísticos sobre DetectedElement.
         out.append(Suggestion(
             key               = s.key,
             label             = s.label,
