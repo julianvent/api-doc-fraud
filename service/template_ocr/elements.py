@@ -19,6 +19,14 @@ class DetectedElement:
     bbox: np.ndarray  # polygon of points, shape (N, 2), values in [0, 1]
     confidence: float
 
+    def to_dict(self) -> dict:
+        return {
+            "id":         self.id,
+            "text":       self.text,
+            "bbox":       self.bbox.tolist(),
+            "confidence": float(self.confidence),
+        }
+
 
 def textlines_to_elements(lines: list[TextLine]) -> list[DetectedElement]:
     """Wrap engine.extract() output as DetectedElements with stable string IDs.

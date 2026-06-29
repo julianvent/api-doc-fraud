@@ -249,6 +249,11 @@ def generate_template(
     engine = _get_engine(config)
     lines  = engine.extract(np_img)
 
+    # Step 2: persist element list so confirm can resolve the same IDs.
+    from service.template_ocr.elements import textlines_to_elements
+    elements = textlines_to_elements(lines)
+    scan_cache.save_elements(generate_id, [e.to_dict() for e in elements])
+
     preclass = preclassify(np_img, lines)
 
     from service.ocr.mrz import detect as detect_mrz
@@ -316,7 +321,7 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
         )
 
     # Load auxiliary dots-mode data first (before deleting the scan cache entry).
-    elements_by_id: dict[int, dict] = {}
+    elements_by_id: dict = {}
     ext = "jpg"
     if req.generate_id:
         cached_elements = scan_cache.load_elements(req.generate_id)
