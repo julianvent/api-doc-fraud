@@ -16,7 +16,7 @@ class TemplateField(BaseModel):
     type     : str            = "text"
     category : Optional[str]  = None
     # Spatial regions (normalised 0.0–1.0). Populated after the user assigns
-    # elements in the dots flow; absent in auto/manual templates.
+    # elements in the dots or manual flow; absent in auto templates.
     label_region : Optional[dict] = None  # {x1, y1, x2, y2}
     value_region : Optional[dict] = None  # {x1, y1, x2, y2}
     # Element IDs sent by the client during confirm. Used to resolve the

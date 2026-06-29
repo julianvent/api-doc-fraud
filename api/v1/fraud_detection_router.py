@@ -16,10 +16,8 @@ from controller import template_controller
 router = APIRouter(prefix="/v1")
 
 
-async def _dots_sse_stream(
-    image: UploadFile,
-    expected_fields: Optional[list],
-) -> None:
+async def _sse_stream(image: UploadFile, mode: str) -> None:
+    """SSE wrapper for generate modes that may take several seconds (dots, manual)."""
     # Send headers + first bytes immediately so every proxy/browser timer resets.
     yield ": keepalive\n\n"
 
@@ -27,8 +25,7 @@ async def _dots_sse_stream(
         asyncio.to_thread(
             template_controller.generate_template,
             image=image,
-            mode="dots",
-            expected_fields=expected_fields,
+            mode=mode,
         )
     )
 
@@ -86,23 +83,10 @@ async def get_template(template_id: str):
 async def generate_template(
     image: Annotated[UploadFile, File(description="Sample document image")],
     mode: Annotated[str, Form(description="auto | manual | dots")],
-    expected_fields: Annotated[
-        Optional[str],
-        Form(description='JSON array of {key,label,type} — required when mode=manual'),
-    ] = None,
 ):
-    parsed_expected = None
-    if expected_fields:
-        try:
-            parsed_expected = _json.loads(expected_fields)
-            if not isinstance(parsed_expected, list):
-                raise ValueError("expected_fields must be a JSON array")
-        except (ValueError, _json.JSONDecodeError) as e:
-            raise HTTPException(status_code=422, detail=f"invalid expected_fields: {e}")
-
-    if mode == "dots":
+    if mode in ("dots", "manual"):
         return StreamingResponse(
-            _dots_sse_stream(image=image, expected_fields=parsed_expected),
+            _sse_stream(image=image, mode=mode),
             media_type="text/event-stream",
         )
 
@@ -110,7 +94,6 @@ async def generate_template(
         template_controller.generate_template,
         image=image,
         mode=mode,
-        expected_fields=parsed_expected,
     )
 
 

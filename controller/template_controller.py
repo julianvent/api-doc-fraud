@@ -144,16 +144,9 @@ def get_template(template_id: str) -> TemplateDetail:
 def generate_template(
     image: UploadFile,
     mode: str,
-    expected_fields: Optional[list[dict]] = None,
 ) -> GenerateResponse:
     if mode not in {"auto", "manual", "dots"}:
         raise HTTPException(status_code=422, detail="mode must be 'auto', 'manual', or 'dots'")
-    if mode == "manual" and not expected_fields:
-        raise HTTPException(
-            status_code=422,
-            detail="expected_fields is required when mode='manual'",
-        )
-
     from controller._upload_limits import read_within_limit
 
     image_bytes = read_within_limit(image)
@@ -244,7 +237,8 @@ def generate_template(
             ocr_elements       = ocr_elements,
         )
 
-    # ── auto / manual mode: existing heuristic-based suggestion flow.
+    # ── auto / manual mode (PaddleOCR). manual returns neutral detected
+    # elements with no suggestions; auto adds heuristic suggestions on top.
     config = OCRConfig()
     engine = _get_engine(config)
     lines  = engine.extract(np_img)
@@ -254,6 +248,32 @@ def generate_template(
     elements = textlines_to_elements(lines)
     scan_cache.save_elements(generate_id, [e.to_dict() for e in elements])
 
+    # ── manual mode: neutral DetectedElements, no suggestions, no pairing.
+    if mode == "manual":
+        preclass = preclassify(np_img, lines)
+        ocr_lines = [
+            OCRLine(
+                id         = e.id,
+                text       = e.text,
+                bbox       = e.bbox.tolist(),
+                confidence = float(e.confidence),
+            )
+            for e in elements
+        ]
+        return GenerateResponse(
+            generate_id        = generate_id,
+            expires_at         = expires_at,
+            image_dims         = (int(width), int(h)),
+            preclass           = PreclassPayload(
+                doc_family  = preclass.doc_family,
+                country_iso = preclass.country_iso,
+                mrz_type    = preclass.mrz_type,
+                confidence  = preclass.confidence,
+            ),
+            qr_config          = _detect_qr(np_img),
+            ocr_lines          = ocr_lines,
+        )
+
     preclass = preclassify(np_img, lines)
 
     from service.ocr.mrz import detect as detect_mrz
@@ -261,12 +281,9 @@ def generate_template(
     mrz_fields = _mrz_to_dict(mrz_result) if mrz_result else None
 
     suggestions = []
-    if mode == "auto":
-        suggestions.extend(heuristics.suggest_from_mrz(mrz_result))
-        suggestions.extend(heuristics.suggest_from_regex(lines))
-    else:
-        suggestions.extend(heuristics.suggest_from_mrz(mrz_result))
-        suggestions.extend(heuristics.suggest_from_expected(expected_fields or [], lines))
+    # mode is always "auto" here; "manual" already returned above.
+    suggestions.extend(heuristics.suggest_from_mrz(mrz_result))
+    suggestions.extend(heuristics.suggest_from_regex(lines))
 
     # Best-effort: populate value_element_ids / label_element_id for MRZ-derived
     # suggestions so the client has the element IDs if it wants to render

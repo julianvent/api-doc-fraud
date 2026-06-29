@@ -71,5 +71,5 @@ class GenerateResponse(BaseModel):
     mrz_fields         : Optional[dict]           = None
     suggestions        : list[FieldSuggestion]    = Field(default_factory=list)
     anchors_candidates : list[str]                = Field(default_factory=list)
-    # Populated only when mode='dots'; empty for auto/manual.
+    # Populated only when mode='dots'. Empty for auto and manual.
     ocr_elements       : list[OCRElement]         = Field(default_factory=list)
