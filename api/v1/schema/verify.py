@@ -1,4 +1,5 @@
 """Public request and response schemas for POST /v1/verify/."""
+
 from __future__ import annotations
 
 from typing import List
@@ -17,6 +18,9 @@ class BaseVerifyRequest(BaseModel):
     document_images: list[UploadFile]
     id: str
     document_type: str | None = None
+    full_name: str | None = None
+    date_of_birth: str | None = None
+    gender: str | None = None
 
 
 class BaseVerifyResponse(BaseModel):
@@ -29,3 +33,9 @@ class BaseVerifyResponse(BaseModel):
     verdict: Verdict
     modules: ModulesReportSchema
     execution: ExecutionMetadataSchema
+
+
+class Identity(BaseModel):
+    full_name: str | None = None
+    date_of_birth: str | None = None
+    gender: str | None = None

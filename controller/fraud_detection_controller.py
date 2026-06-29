@@ -17,7 +17,7 @@ from typing import List
 
 from fastapi import UploadFile
 
-from api.v1.schema.verify import BaseVerifyResponse
+from api.v1.schema.verify import BaseVerifyResponse, Identity
 from service import policy, report_builder
 from service.metadata import metadata
 from service.ocr import ocr
@@ -43,7 +43,12 @@ def upload_file(file: UploadFile, path: str, id: str) -> Path:
     return path
 
 
-def verify(files: list[UploadFile], id: str, document_type: str | None = None) -> BaseVerifyResponse:
+def verify(
+    files: list[UploadFile],
+    id: str,
+    identity: Identity,
+    document_type: str | None = None,
+) -> BaseVerifyResponse:
     """Run the full pipeline on the uploaded files of a single document."""
     request_id = str(uuid.uuid4())
     started_at = time.perf_counter()
@@ -70,7 +75,11 @@ def verify(files: list[UploadFile], id: str, document_type: str | None = None) -
         save_image(page, Path(FILES_PATH) / id / "processed")
         for page in processed_pages
     ]
-    ocr_results = ocr.process(ocr_paths, document_type=document_type)
+    ocr_results = ocr.process(
+        ocr_paths,
+        document_type=document_type,
+        identity=identity,
+    )
     timings["ocr"] = int((time.perf_counter() - t0) * 1000)
 
     risk = policy.compute(
@@ -98,8 +107,12 @@ def verify(files: list[UploadFile], id: str, document_type: str | None = None) -
 
 
 def upload_template(
-    img: UploadFile, document_name: str, document_type: str,
-    country: str, edition: date, state: str | None = None
+    img: UploadFile,
+    document_name: str,
+    document_type: str,
+    country: str,
+    edition: date,
+    state: str | None = None,
 ) -> DocumentTemplate:
     path = upload_file(file=img, path=TEMPLATE_PATH, id="test")
 

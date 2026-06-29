@@ -1,4 +1,5 @@
 """Translate the internal module outputs into the public BaseVerifyResponse."""
+
 from __future__ import annotations
 
 import json
@@ -17,6 +18,7 @@ from api.v1.schema.common import (
     TamperingModuleSchema,
     TamperingPageSchema,
     Verdict,
+    FieldConsistency,
 )
 from api.v1.schema.verify import BaseVerifyResponse
 from service.metadata.analyzer import MetadataReport
@@ -100,14 +102,20 @@ def _build_tampering(reports: List[PageReport]) -> TamperingModuleSchema:
             reliability=r.reliability.value,
             reasons=[f"[{f.severity.value}] {f.message}" for f in r.findings],
             face_detected=bool(r.face.detected) if r.face else False,
-            doctamper_score=r.doctamper.score_mean if r.doctamper and r.doctamper.ran else None,
+            doctamper_score=(
+                r.doctamper.score_mean if r.doctamper and r.doctamper.ran else None
+            ),
             trufor_score=r.trufor.score if r.trufor and r.trufor.ran else None,
-            face_trufor_score=r.face_trufor.score if r.face_trufor and r.face_trufor.ran else None,
+            face_trufor_score=(
+                r.face_trufor.score if r.face_trufor and r.face_trufor.ran else None
+            ),
         )
         for r in reports
     ]
     worst = max(reports, key=lambda r: _RISK_RANK.get(r.risk_label, 0), default=None)
-    worst_risk_label = worst.risk_label.value if worst is not None else RiskLabel.LEGITIMATE.value
+    worst_risk_label = (
+        worst.risk_label.value if worst is not None else RiskLabel.LEGITIMATE.value
+    )
     worst_fraud_score = max((r.fraud_score for r in reports), default=0.0)
     return TamperingModuleSchema(
         pages=pages,
@@ -141,25 +149,36 @@ def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
 
         nested = r.get("result", {}) if isinstance(r.get("result"), dict) else {}
 
-        document_type  = r.get("document_type")  or nested.get("document_type")
-        verdict        = r.get("verdict")        or nested.get("verdict")
+        document_type = r.get("document_type") or nested.get("document_type")
+        verdict = r.get("verdict") or nested.get("verdict")
         confidence_avg = r.get("confidence_avg") or nested.get("confidence_avg", 0.0)
-        fields         = r.get("fields")         or nested.get("fields")
-        extras         = r.get("extras")         or nested.get("extras")
-        match_score    = r.get("match_score")
-        flags          = r.get("flags")
+        fields = r.get("fields") or nested.get("fields")
+        extras = r.get("extras") or nested.get("extras")
+        match_score = r.get("match_score")
+        flags = r.get("flags")
+        id_consistency = r.get("identity_mismatches")
+        mrz_consistency = r.get("mismatches")
 
         if fields:
-            print(f"[OCR page {i + 1}] fields:\n{json.dumps(fields, indent=2, ensure_ascii=False)}")
+            print(
+                f"[OCR page {i + 1}] fields:\n{json.dumps(fields, indent=2, ensure_ascii=False)}"
+            )
 
-        pages.append(OCRPageSchema(
-            page_number    = i + 1,
-            document_type  = document_type,
-            verdict        = verdict,
-            confidence_avg = confidence_avg,
-            fields         = fields,
-            extras         = extras,
-            match_score    = match_score,
-            flags          = flags,
-        ))
+        pages.append(
+            OCRPageSchema(
+                page_number=i + 1,
+                document_type=document_type,
+                verdict=verdict,
+                confidence_avg=confidence_avg,
+                fields=fields,
+                extras=extras,
+                match_score=match_score,
+                flags=flags,
+                field_consistency=FieldConsistency(
+                    consistency= not (id_consistency or mrz_consistency),
+                    identity=id_consistency,
+                    mrz=mrz_consistency,
+                ),
+            )
+        )
     return OCRModuleSchema(engine=engine_name, pages=pages)
