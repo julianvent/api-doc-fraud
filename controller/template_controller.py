@@ -251,6 +251,7 @@ def generate_template(
     # ── manual mode: neutral DetectedElements, no suggestions, no pairing.
     if mode == "manual":
         preclass = preclassify(np_img, lines)
+        scan_cache.save_preprocessed_image(generate_id, np_img)
         ocr_lines = [
             OCRLine(
                 id         = e.id,
