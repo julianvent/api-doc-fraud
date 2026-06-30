@@ -18,7 +18,7 @@ from api.v1.schema.common import (
     TamperingModuleSchema,
     TamperingPageSchema,
     Verdict,
-    FieldConsistency,
+    ConsistencyVerification,
 )
 from api.v1.schema.verify import BaseVerifyResponse
 from service.metadata.analyzer import MetadataReport
@@ -142,6 +142,8 @@ def _build_preprocessor(pages: List[ProcessedPage]) -> PreprocessorModuleSchema:
 
 def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
     pages = []
+    identity_mismatches = []
+    mrz_mismatches = []
     for i, r in enumerate(results):
         if not isinstance(r, dict):
             pages.append(OCRPageSchema(page_number=i + 1))
@@ -156,8 +158,8 @@ def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
         extras = r.get("extras") or nested.get("extras")
         match_score = r.get("match_score")
         flags = r.get("flags")
-        id_consistency = r.get("identity_mismatches")
-        mrz_consistency = r.get("mismatches")
+        identity_mismatches.extend(r.get("identity_mismatches"))
+        mrz_mismatches.extend(r.get("mrz_mismatches"))
 
         if fields:
             print(
@@ -174,11 +176,15 @@ def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
                 extras=extras,
                 match_score=match_score,
                 flags=flags,
-                field_consistency=FieldConsistency(
-                    consistency= not (id_consistency or mrz_consistency),
-                    identity=id_consistency,
-                    mrz=mrz_consistency,
-                ),
             )
         )
-    return OCRModuleSchema(engine=engine_name, pages=pages)
+        
+    return OCRModuleSchema(
+        engine=engine_name,
+        pages=pages,
+        consistency_verification=ConsistencyVerification(
+            consistency= not (identity_mismatches or mrz_mismatches),
+            identity_inconsistencies=identity_mismatches,
+            mrz_inconsistencies=mrz_mismatches,
+        ),
+    )

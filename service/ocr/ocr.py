@@ -393,21 +393,22 @@ def _run(
             print(f"[TMPL] fields after VLM fill: {template_fields}")
 
         mrz_flags: list[str] = []
-        mismatches: list[dict] = []
+        mrz_mismatches: list[dict] = []
+        
         if mrz:
             if not mrz.valid:
                 mrz_flags.append("mrz_checksum_failed")
                 print("[MRZ-CMP] MRZ checksum invalid — comparing anyway")
-            mismatches = _compare_mrz(template_fields, mrz)
-            print(f"[MRZ-CMP] mismatches found: {len(mismatches)}")
-            if mismatches:
+            mrz_mismatches = _compare_mrz(template_fields, mrz)
+            print(f"[MRZ-CMP] mismatches found: {len(mrz_mismatches)}")
+            if mrz_mismatches:
                 mrz_flags.append("mrz_mismatch")
         else:
             print("[MRZ-CMP] skipped: no MRZ detected")
 
         # Validation with identity packet
         identity_mismatches = _compare_identity(template_fields, identity)
-        print(f"[ID-CMP]: {identity_mismatches}")
+        print(f"[ID-CMP] mismatches found: {len(identity_mismatches)}")
 
         output = _build_pipeline_output(document_type, mrz, lines, confidence_avg)
         _save_visualization(image, output, Path(image_path), config)
@@ -437,13 +438,12 @@ def _run(
             "fields": template_fields,
             "mrz": mrz_dict_out,
             "unmatched_fields": match_result.unmatched_fields,
+            "flags": mrz_flags,
+            "mrz_mismatches": mrz_mismatches,
+            "identity_mismatches": identity_mismatches,
+            
         }
-        if mrz_flags:
-            result["flags"] = mrz_flags
-        if mismatches:
-            result["mismatches"] = mismatches
-        if identity_mismatches:
-            result["identity_mismatches"] = identity_mismatches
+            
         return result
 
     # ── fallback path (no template: full VLM extraction) ───────────────────
@@ -453,7 +453,7 @@ def _run(
     return extract_with_vision(str(image_path), vision_backend, output, spatial, None)
 
 
-def _compare_identity(template_fields: dict, identity: Identity):
+def _compare_identity(template_fields: dict, identity: Identity) -> list[dict]:
     identity_dict = identity.model_dump()
     mismatches = []
     common = set(template_fields) & set(identity_dict) & _IDENTITY_COMPARABLE_FIELDS
@@ -470,7 +470,9 @@ def _compare_identity(template_fields: dict, identity: Identity):
         similarity = template_value_norm == identity_value_norm
 
         if not similarity:
-            mismatches.append(template_value)
+            mismatches.append(
+                {key: identity_value}
+            )
 
         return mismatches
 

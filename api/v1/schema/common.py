@@ -87,18 +87,18 @@ class OCRPageSchema(BaseModel):
     extras: Optional[dict] = None
     match_score: Optional[float] = None
     flags: Optional[List[str]] = None
-    field_consistency: Optional[FieldConsistency] = None
 
 
 class OCRModuleSchema(BaseModel):
     engine: str
     pages: List[OCRPageSchema]
+    consistency_verification: ConsistencyVerification
 
 
-class FieldConsistency(BaseModel):
+class ConsistencyVerification(BaseModel):
     consistency: bool
-    identity: Optional[list[str]] = []
-    mrz: Optional[list[str]] = []
+    identity_inconsistencies: Optional[list[dict]] = []
+    mrz_inconsistencies: Optional[list[dict]] = []
 
 
 # ── modules wrapper ───────────────────────────────────────────────────────────
