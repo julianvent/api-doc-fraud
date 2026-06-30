@@ -120,7 +120,7 @@ def _spatial_layout(lines: list) -> str:
 
 
 _ROW_GROUP_THRESHOLD = 0.03
-MRZ_MATCH_THRESHOLD = 90
+MRZ_MATCH_THRESHOLD = 100
 
 
 def _row_order(lines: list) -> list:
@@ -200,7 +200,6 @@ def _compare_mrz(template_fields: dict, mrz) -> list[dict]:
                     "field": key,
                     "template_value": tv,
                     "mrz_value": mv,
-                    "similarity": similarity,
                 }
             )
     return mismatches

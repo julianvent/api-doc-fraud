@@ -43,13 +43,13 @@ def normalize_date(value) -> str | None:
         return None
     # datetime/date objects: format directly to avoid str() adding a time component
     if isinstance(value, (datetime, date)):
-        return value.strftime("%d/%m/%Y")
+        return value.strftime("%Y/%m/%d")
     clean = str(value).strip().upper()
     if not clean:
         return None
     for fmt in DATE_FORMATS:
         try:
-            return datetime.strptime(clean, fmt).strftime("%d/%m/%Y")
+            return datetime.strptime(clean, fmt).strftime("%Y/%m/%d")
         except ValueError:
             continue
     return str(value)  # unrecognized format: return original
