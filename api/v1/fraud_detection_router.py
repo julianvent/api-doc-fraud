@@ -3,7 +3,7 @@ import json as _json
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from api.v1.schema.document_template import TemplateDetail, TemplateSummary
 from api.v1.schema.template_confirm import ConfirmTemplateRequest
@@ -11,6 +11,7 @@ from api.v1.schema.template_generate import GenerateResponse
 from api.v1.schema.verify import BaseVerifyRequest, BaseVerifyResponse
 from controller import fraud_detection_controller as fraud_controller
 from controller import template_controller
+from service.template_ocr import scan_cache as _scan_cache
 
 
 router = APIRouter(prefix="/v1")
@@ -104,3 +105,22 @@ async def generate_template(
 )
 async def confirm_template(req: ConfirmTemplateRequest):
     return template_controller.confirm_template(req)
+
+
+@router.get("/templates/session/{generate_id}/image")
+async def get_session_image(generate_id: str):
+    """Serve the preprocessed image for an active generate session.
+
+    Available from the moment generate returns until confirm is called
+    (confirm deletes the scan-cache entry). Returns 404 for expired,
+    already-confirmed, or mode=auto sessions (auto does not save a
+    preprocessed image).
+    """
+    path = _scan_cache.path_for_preprocessed(generate_id)
+    if path is None:
+        raise HTTPException(
+            status_code=404,
+            detail="no preprocessed image for this generate_id "
+                   "(expired, already confirmed, or mode=auto)",
+        )
+    return FileResponse(path, media_type="image/png")

@@ -67,6 +67,7 @@ class TemplateDetail(BaseModel):
     doc_family      : Optional[str]             = None
     mrz_type        : Optional[str]             = None
     img_path        : Optional[str]             = None
+    reference_image : Optional[str]             = None
     fields          : list[TemplateField]       = Field(default_factory=list)
     anchors         : list[str]                 = Field(default_factory=list)
     fingerprint     : dict                      = Field(default_factory=dict)

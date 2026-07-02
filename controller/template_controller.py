@@ -5,15 +5,23 @@
   POST   /v1/templates/generate    → generate_template (no persistence)
   POST   /v1/templates/confirm     → confirm_template (writes JSON + indexes in Qdrant)
 
-Persistence model: each template is a JSON file on disk under
-service/ocr/templates/{document_type}_{country_iso}_{edition}.json
+Persistence model: one folder per template under
+service/template_ocr/templates/{slug}/ containing:
+  template.json      — field specs with spatial regions
+  template.{ext}     — original uploaded image (img_path points here)
+  preprocessed.png   — preprocessed image (reference_image = "preprocessed.png")
 plus a point in Qdrant for vector matching. NO database row.
+
+Transition: confirm also writes to service/ocr/templates/{slug}.json so the
+verify team can keep reading from their current location until they migrate.
+TODO: remove the legacy write once verify migrates.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -47,9 +55,8 @@ from service.template_ocr import heuristics, scan_cache
 
 log = get_logger(__name__)
 
-TEMPLATES_DIR       = Path(OCRConfig().templates_dir)
-TEMPLATE_IMAGES_DIR = Path("template")
-TEMPLATES_JSON_DIR  = Path("templates_json")
+NEW_TEMPLATES_DIR     = Path("service/template_ocr/templates")
+_LEGACY_TEMPLATES_DIR = Path(OCRConfig().templates_dir)  # service/ocr/templates/ — kept for verify team
 
 
 # Lazy singleton for DotsOCRAdapter — loading the model is expensive.
@@ -90,8 +97,32 @@ def _enclosing_rect(polys: list) -> dict:
     return {"x1": min(xs), "y1": min(ys), "x2": max(xs), "y2": max(ys)}
 
 
+_DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]+")
+_LABEL_SEP_RE  = re.compile(r"^[\s/]+|[\s/]+$")
+
+
+def _normalize_label_text(raw: str) -> str:
+    """Strip Devanagari chars (U+0900–U+097F), collapse internal spaces, trim separators.
+
+    Preserves all Latin, including accented chars (e.g. Spanish 'expedición').
+    If normalization empties the string, returns "" so the caller can fall back.
+    """
+    cleaned = _DEVANAGARI_RE.sub("", raw)
+    cleaned = re.sub(r" {2,}", " ", cleaned)  # collapse runs of spaces left by removal
+    cleaned = _LABEL_SEP_RE.sub("", cleaned)
+    return cleaned
+
+
 def _reading_order_label(elems: list) -> str:
-    """Concatenate element texts in reading order: rows top→bottom, x_center left→right."""
+    """Concatenate element texts in reading order, stripping Devanagari per element.
+
+    Normalizing per-element (not the whole joined string) ensures that a leading
+    separator like '/Latin text' in one element is stripped cleanly without
+    affecting a '/' that is genuine content inside another element (e.g. DD/MM/YYYY).
+    Fallback per element: if normalization empties a single element, its raw text
+    is used instead so no element is silently lost.
+    Rows sorted top→bottom, then x_center left→right within a row.
+    """
     if not elems:
         return ""
     def _top_y(e: dict) -> float:
@@ -100,7 +131,11 @@ def _reading_order_label(elems: list) -> str:
         pts = e["bbox"]
         return sum(pt[0] for pt in pts) / len(pts)
     ordered = sorted(elems, key=lambda e: (_top_y(e), _x_center(e)))
-    return " ".join(e["text"] for e in ordered)
+    parts = []
+    for e in ordered:
+        normalized = _normalize_label_text(e["text"])
+        parts.append(normalized if normalized else e["text"])
+    return " ".join(parts)
 
 
 # ─────────────────────────────────────────── filename helpers
@@ -115,7 +150,7 @@ def _template_slug(document_type: str, country_iso: Optional[str], edition: int)
 
 
 def _template_path(slug: str) -> Path:
-    return TEMPLATES_DIR / f"{slug}.json"
+    return NEW_TEMPLATES_DIR / slug / "template.json"
 
 
 def _parse_slug(slug: str) -> Optional[tuple[str, Optional[str], int]]:
@@ -137,20 +172,21 @@ def list_templates(
     document_type: Optional[str] = None,
     country: Optional[str] = None,
 ) -> list[TemplateSummary]:
-    if not TEMPLATES_DIR.exists():
+    if not NEW_TEMPLATES_DIR.exists():
         return []
 
     out: list[TemplateSummary] = []
-    for path in sorted(TEMPLATES_DIR.glob("*.json")):
+    for json_path in sorted(NEW_TEMPLATES_DIR.glob("*/template.json")):
+        slug = json_path.parent.name
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(json_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
         if document_type and data.get("document_type") != document_type:
             continue
         if country and data.get("country") != country:
             continue
-        out.append(_data_to_summary(path.stem, data))
+        out.append(_data_to_summary(slug, data))
     return out
 
 
@@ -417,31 +453,43 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
         fields_payload.append(fd)
 
     data = {
-        "schema_version": 2,
-        "document_type":  req.document_type,
-        "document_name":  req.document_name,
-        "country":        req.country,
-        "country_iso":    req.country_iso,
-        "state":          req.state,
-        "edition":        req.edition,
-        "doc_family":     req.doc_family,
-        "mrz_type":       req.mrz_type,
-        "img_path":       img_path,
-        "fields":         fields_payload,
-        "anchors":        list(req.anchors or []),
-        "fingerprint":    req.fingerprint or {},
-        "field_rules":    req.field_rules or {},
-        "qr_config":      req.qr_config or {},
-        "created_at":     datetime.now(timezone.utc).isoformat(),
+        "schema_version":  2,
+        "document_type":   req.document_type,
+        "document_name":   req.document_name,
+        "country":         req.country,
+        "country_iso":     req.country_iso,
+        "state":           req.state,
+        "edition":         req.edition,
+        "doc_family":      req.doc_family,
+        "mrz_type":        req.mrz_type,
+        "img_path":        img_path,
+        "reference_image": "preprocessed.png",
+        "fields":          fields_payload,
+        "anchors":         list(req.anchors or []),
+        "fingerprint":     req.fingerprint or {},
+        "field_rules":     req.field_rules or {},
+        "qr_config":       req.qr_config or {},
+        "created_at":      datetime.now(timezone.utc).isoformat(),
     }
 
-    TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+    # 1. Authoritative write — new per-template folder.
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Write to the per-template folder (enriched copy with coordinates).
-    _persist_templates_json(slug, ext, data, req.generate_id)
+    # 2. Copy preprocessed image (always .png) into the template folder.
+    if req.generate_id:
+        preprocessed = scan_cache.path_for_preprocessed(req.generate_id)
+        if preprocessed:
+            shutil.copy2(preprocessed, path.parent / "preprocessed.png")
 
-    # Clean up any remaining dots-mode cache files.
+    # 3. Transition: legacy flat copy for the verify team.
+    # TODO: remove when verify team migrates to service/template_ocr/templates/
+    _LEGACY_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+    (_LEGACY_TEMPLATES_DIR / f"{slug}.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    # 4. Clean up any remaining scan-cache files.
     if req.generate_id:
         scan_cache.delete_dots_cache(req.generate_id)
 
@@ -453,31 +501,9 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
 # ─────────────────────────────────────────── helpers
 
 
-def _persist_templates_json(
-    slug: str,
-    ext: str,
-    data: dict,
-    generate_id: Optional[str],
-) -> None:
-    """Write enriched template JSON + preprocessed image to templates_json/{slug}/."""
-    import shutil
-
-    tj_dir = TEMPLATES_JSON_DIR / slug
-    tj_dir.mkdir(parents=True, exist_ok=True)
-    (tj_dir / "template.json").write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    if generate_id:
-        preprocessed = scan_cache.path_for_preprocessed(generate_id)
-        if preprocessed and preprocessed.exists():
-            shutil.copy2(preprocessed, tj_dir / f"preprocessed.{ext}")
-
-
 def _persist_template_image(image_bytes: bytes, slug: str, ext: str) -> str:
-    dest_dir = TEMPLATE_IMAGES_DIR / slug
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"template.{ext}"
+    dest = NEW_TEMPLATES_DIR / slug / f"template.{ext}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(image_bytes)
     return dest.as_posix()
 
@@ -560,6 +586,7 @@ def _data_to_detail(slug: str, data: dict) -> TemplateDetail:
         doc_family      = data.get("doc_family"),
         mrz_type        = data.get("mrz_type"),
         img_path        = data.get("img_path"),
+        reference_image = data.get("reference_image"),
         fields          = fields,
         anchors         = list(data.get("anchors") or []),
         fingerprint     = data.get("fingerprint") or {},

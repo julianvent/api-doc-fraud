@@ -46,6 +46,7 @@ class Template(BaseModel):
     year_start        : Optional[int]          = None
     year_end          : Optional[int]          = None
     img_path          : Optional[str]          = None
+    reference_image   : Optional[str]          = None
     anchors           : list[str]              = Field(default_factory=list)
     fingerprint       : Optional[Fingerprint]  = None
     fields            : list[FieldSpec]        = Field(default_factory=list)
