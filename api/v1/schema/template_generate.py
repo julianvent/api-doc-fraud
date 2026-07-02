@@ -47,8 +47,8 @@ class OCRElement(BaseModel):
     """A single text element returned by DotsOCR in mode='dots'.
 
     The id is stable within a generate/confirm session: pass it back as
-    label_element_id or value_element_id in the confirm request so the
-    API can resolve the spatial region for that field.
+    label_element_ids or value_element_ids (list[int]) in the confirm request
+    so the API can resolve the spatial region for that field.
 
     role is a best-effort hint: 'label' for field names, 'value' for field
     values, 'unknown' when there is not enough signal. The user can override

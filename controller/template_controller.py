@@ -76,6 +76,33 @@ def _normalize_bbox_to_region(bbox: "np.ndarray", w: int, h: int) -> dict:
     }
 
 
+def _poly_to_rect(poly: list) -> dict:
+    """Polygon [[x,y],...] normalised 0–1 → axis-aligned {x1,y1,x2,y2} rect."""
+    xs = [pt[0] for pt in poly]
+    ys = [pt[1] for pt in poly]
+    return {"x1": min(xs), "y1": min(ys), "x2": max(xs), "y2": max(ys)}
+
+
+def _enclosing_rect(polys: list) -> dict:
+    """Enclosing axis-aligned rect over multiple normalised polygons → {x1,y1,x2,y2}."""
+    xs = [pt[0] for poly in polys for pt in poly]
+    ys = [pt[1] for poly in polys for pt in poly]
+    return {"x1": min(xs), "y1": min(ys), "x2": max(xs), "y2": max(ys)}
+
+
+def _reading_order_label(elems: list) -> str:
+    """Concatenate element texts in reading order: rows top→bottom, x_center left→right."""
+    if not elems:
+        return ""
+    def _top_y(e: dict) -> float:
+        return min(pt[1] for pt in e["bbox"])
+    def _x_center(e: dict) -> float:
+        pts = e["bbox"]
+        return sum(pt[0] for pt in pts) / len(pts)
+    ordered = sorted(elems, key=lambda e: (_top_y(e), _x_center(e)))
+    return " ".join(e["text"] for e in ordered)
+
+
 # ─────────────────────────────────────────── filename helpers
 
 
@@ -358,20 +385,35 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
         img_path = _persist_template_image(cached, slug, ext)
         scan_cache.delete(req.generate_id)
 
-    # Build the fields list, resolving element IDs to spatial regions where
-    # provided. label_element_id / value_element_id are not persisted.
-    _coord_fields = {"label_element_id", "value_element_id"}
+    # Build the fields list. Element ID lists are resolved to spatial regions
+    # then stripped — they are session-scoped cache indices, dead after confirm.
+    # Persisted shape: key, label, type, category, label_region, value_region.
+    # label_region must never be null (verify contract); label-less fields use
+    # the same IDs for label and value → equal regions fall out naturally.
+    _coord_fields = {"label_element_ids", "value_element_ids"}
     fields_payload = []
     for f in req.fields:
         fd = f.model_dump(exclude=_coord_fields)
-        if f.label_element_id is not None:
-            elem = elements_by_id.get(f.label_element_id)
-            if elem:
-                fd["label_region"] = elem["bbox"]
-        if f.value_element_id is not None:
-            elem = elements_by_id.get(f.value_element_id)
-            if elem:
-                fd["value_region"] = elem["bbox"]
+
+        label_elems = [elements_by_id[i] for i in f.label_element_ids if i in elements_by_id]
+        value_elems = [elements_by_id[i] for i in f.value_element_ids if i in elements_by_id]
+
+        if label_elems:
+            fd["label_region"] = _enclosing_rect([e["bbox"] for e in label_elems])
+            # For fields with a real visible label (IDs differ from value IDs),
+            # build the label string from OCR text in reading order.
+            # For label-less fields (same IDs) keep the user-provided label string.
+            if f.label_element_ids != f.value_element_ids:
+                fd["label"] = _reading_order_label(label_elems)
+
+        if value_elems:
+            fd["value_region"] = _enclosing_rect([e["bbox"] for e in value_elems])
+
+        # Verify requires label_region non-null. If label elements didn't resolve
+        # (e.g. label-less field or cache miss), mirror value_region.
+        if fd.get("label_region") is None and fd.get("value_region") is not None:
+            fd["label_region"] = fd["value_region"]
+
         fields_payload.append(fd)
 
     data = {

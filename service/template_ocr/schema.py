@@ -4,16 +4,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class FieldSpec(BaseModel):
-    key               : str
-    label             : str
-    type              : str           = "text"
-    category          : Optional[str] = None
-    required          : bool          = False
-    # Detection-first fields (Step 0). All optional so existing templates load unchanged.
-    # bbox is normalized 0–1 (persisted); runtime coords live in DetectedElement.bbox.
-    bbox              : Optional[list]  = None
-    value_element_ids : list[int]        = Field(default_factory=list)
-    label_element_id  : Optional[int]   = None
+    key          : str
+    label        : str
+    type         : str            = "text"
+    category     : Optional[str]  = None
+    required     : bool           = False
+    # Spatial regions (normalised 0.0–1.0). Populated at confirm; absent in
+    # auto templates and old v2 templates (load as None — backward compat).
+    label_region : Optional[dict] = None  # {x1, y1, x2, y2}
+    value_region : Optional[dict] = None  # {x1, y1, x2, y2}
 
 
 class Fingerprint(BaseModel):
