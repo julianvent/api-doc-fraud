@@ -25,7 +25,7 @@ class BaseVerifyRequest(BaseModel):
 
 class BaseVerifyResponse(BaseModel):
     # Backwards-compatible flat fields. Existing consumers keep working.
-    tampering_score: float
+    risk_score: float
     flags: List[str]
     confidence: float
 

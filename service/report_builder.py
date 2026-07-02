@@ -49,7 +49,7 @@ def build(
 ) -> BaseVerifyResponse:
     return BaseVerifyResponse(
         # Backwards-compatible flat fields
-        tampering_score=risk.score,
+        risk_score=risk.score,
         flags=risk.flags,
         confidence=risk.confidence,
         verdict=Verdict(risk.verdict),
@@ -70,7 +70,7 @@ def build(
 
 
 def _build_metadata(reports: List[MetadataReport]) -> MetadataModuleSchema:
-    files = [
+    pages = [
         MetadataFileReportSchema(
             source=r.source,
             format=r.format,
@@ -90,7 +90,7 @@ def _build_metadata(reports: List[MetadataReport]) -> MetadataModuleSchema:
         for r in reports
     ]
     aggregate = max((r.suspicion_score for r in reports), default=0.0)
-    return MetadataModuleSchema(files=files, aggregate_suspicion=aggregate)
+    return MetadataModuleSchema(pages=pages, aggregate_suspicion=aggregate)
 
 
 def _build_tampering(reports: List[PageReport]) -> TamperingModuleSchema:
@@ -152,14 +152,17 @@ def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
         nested = r.get("result", {}) if isinstance(r.get("result"), dict) else {}
 
         document_type = r.get("document_type") or nested.get("document_type")
-        verdict = r.get("verdict") or nested.get("verdict")
-        confidence_avg = r.get("confidence_avg") or nested.get("confidence_avg", 0.0)
+        ocr_confidence = r.get("ocr_confidence") or nested.get("ocr_confidence", 0.0)
         fields = r.get("fields") or nested.get("fields")
         extras = r.get("extras") or nested.get("extras")
-        match_score = r.get("match_score")
+        template_match_confidence = r.get("template_match_confidence")
         flags = r.get("flags")
-        identity_mismatches.extend(r.get("identity_mismatches"))
-        mrz_mismatches.extend(r.get("mrz_mismatches"))
+        
+        
+        if r.get("identity_mismatches"):
+            identity_mismatches.extend(r.get("identity_mismatches"))
+        if r.get("mrz_mismatches"):
+            mrz_mismatches.extend(r.get("mrz_mismatches"))
 
         if fields:
             print(
@@ -170,11 +173,10 @@ def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
             OCRPageSchema(
                 page_number=i + 1,
                 document_type=document_type,
-                verdict=verdict,
-                confidence_avg=confidence_avg,
+                ocr_confidence=ocr_confidence,
                 fields=fields,
                 extras=extras,
-                match_score=match_score,
+                template_match_confidence=template_match_confidence,
                 flags=flags,
             )
         )

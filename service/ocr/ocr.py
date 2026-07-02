@@ -198,7 +198,7 @@ def _compare_mrz(template_fields: dict, mrz) -> list[dict]:
             mismatches.append(
                 {
                     "field": key,
-                    "template_value": tv,
+                    "document_value": tv,
                     "mrz_value": mv,
                 }
             )
@@ -275,7 +275,7 @@ def _run(
     image_path: str | Path,
     config: Config,
     vision_backend: OllamaVisionBackend,
-    identity: Identity,
+    identity_packet: Identity,
     document_type: str | None = None,
 ) -> dict:
 
@@ -286,11 +286,11 @@ def _run(
         lines_probe = engine.extract(image_orig)
         if not lines_probe:
             return {"error": "no text extracted", "source": None}
-        confidence_avg = _avg_confidence(lines_probe)
-        if confidence_avg < config.confidence_threshold:
+        ocr_confidence = _avg_confidence(lines_probe)
+        if ocr_confidence < config.confidence_threshold:
             return {
                 "error": "low confidence — document quality insufficient",
-                "confidence_avg": round(confidence_avg, 4),
+                "confidence_avg": round(ocr_confidence, 4),
                 "source": None,
             }
         document_type = _resolve_document_type(image_orig, lines_probe)
@@ -316,13 +316,13 @@ def _run(
             "document_type": document_type,
         }
 
-    confidence_avg = _avg_confidence(lines)
-    print(f"[OCR] avg OCR confidence: {confidence_avg:.3f}")
+    ocr_confidence = _avg_confidence(lines)
+    print(f"[OCR] avg OCR confidence: {ocr_confidence:.3f}")
 
-    if confidence_avg < config.confidence_threshold:
+    if ocr_confidence < config.confidence_threshold:
         return {
             "error": "low confidence — document quality insufficient",
-            "confidence_avg": round(confidence_avg, 4),
+            "confidence_avg": round(ocr_confidence, 4),
             "source": None,
         }
 
@@ -337,26 +337,26 @@ def _run(
 
     # ── template path (primary: OCR bbox matching) ─────────────────────────
     if document_type and templates:
-        best_template, match_result = max(
+        best_template, template_match_confidence = max(
             ((t, match_template(lines, t)) for t in templates),
             key=lambda pair: pair[1].match_score,
         )
         print(
-            f"[TMPL] document_type={document_type!r} match_score={match_result.match_score:.3f} matched={match_result.matched}"
+            f"[TMPL] document_type={document_type!r} match_score={template_match_confidence.match_score:.3f} matched={template_match_confidence.matched}"
         )
 
-        if not match_result.matched:
+        if not template_match_confidence.matched:
             return {
                 "verdict": "unverifiable",
                 "flags": ["layout_mismatch"],
-                "match_score": match_result.match_score,
+                "template_confidence": template_match_confidence.match_score,
                 "document_type": document_type,
                 "template_available": True,
                 "message": "document layout does not match expected template",
             }
 
         template_fields: dict[str, str | None] = {}
-        for key, field_lines in match_result.field_lines.items():
+        for key, field_lines in template_match_confidence.field_lines.items():
             if not field_lines:
                 template_fields[key] = None
                 continue
@@ -370,7 +370,7 @@ def _run(
         if null_fields:
             print(f"[TMPL] null fields → asking VLM: {null_fields}")
             output_for_vlm = _build_pipeline_output(
-                document_type, mrz, lines, confidence_avg
+                document_type, mrz, lines, ocr_confidence
             )
             try:
                 template_schema = _schema_load(best_template)
@@ -393,7 +393,7 @@ def _run(
 
         mrz_flags: list[str] = []
         mrz_mismatches: list[dict] = []
-        
+
         if mrz:
             if not mrz.valid:
                 mrz_flags.append("mrz_checksum_failed")
@@ -406,10 +406,14 @@ def _run(
             print("[MRZ-CMP] skipped: no MRZ detected")
 
         # Validation with identity packet
-        identity_mismatches = _compare_identity(template_fields, identity)
-        print(f"[ID-CMP] mismatches found: {len(identity_mismatches)}")
+        identity_mismatches = []
+        if identity_packet:
+            identity_mismatches = _compare_identity(template_fields, identity_packet)
+            print(f"[ID-CMP] mismatches found: {len(identity_mismatches)}")
+        else:
+            print("[ID-CMP] skipped: no identity packet provided")
 
-        output = _build_pipeline_output(document_type, mrz, lines, confidence_avg)
+        output = _build_pipeline_output(document_type, mrz, lines, ocr_confidence)
         _save_visualization(image, output, Path(image_path), config)
 
         try:
@@ -418,7 +422,7 @@ def _run(
                 Path(config.ocr_output_dir) / f"{Path(image_path).stem}_template.png"
             )
             visualize_template_match(
-                image_bgr, lines, best_template, match_result, str(vis_path)
+                image_bgr, lines, best_template, template_match_confidence, str(vis_path)
             )
         except Exception as e:
             print(
@@ -426,27 +430,25 @@ def _run(
             )
 
         mrz_dict_out = _mrz_to_dict(mrz) if mrz else None
-        verdict = "unverifiable" if "mrz_mismatch" in mrz_flags else "verifiable"
 
         result = {
-            "verdict": verdict,
-            "match_score": match_result.match_score,
+            "template_match_confidence": template_match_confidence.match_score,
+            "ocr_confidence": ocr_confidence,
             "document_type": document_type,
-            "document_name": match_result.document_name,
+            "document_name": template_match_confidence.document_name,
             "template_available": True,
             "fields": template_fields,
             "mrz": mrz_dict_out,
-            "unmatched_fields": match_result.unmatched_fields,
+            "unmatched_fields": template_match_confidence.unmatched_fields,
             "flags": mrz_flags,
             "mrz_mismatches": mrz_mismatches,
             "identity_mismatches": identity_mismatches,
-            
         }
-            
+
         return result
 
     # ── fallback path (no template: full VLM extraction) ───────────────────
-    output = _build_pipeline_output(document_type, mrz, lines, confidence_avg)
+    output = _build_pipeline_output(document_type, mrz, lines, ocr_confidence)
     spatial = _spatial_layout(lines)
     _save_visualization(image, output, Path(image_path), config)
     return extract_with_vision(str(image_path), vision_backend, output, spatial, None)
@@ -466,11 +468,13 @@ def _compare_identity(template_fields: dict, identity: Identity) -> list[dict]:
         template_value_norm = _norm(template_value)
         identity_value_norm = _norm(identity_value)
 
-        similarity = template_value_norm == identity_value_norm
-
-        if not similarity:
+        if not template_value_norm == identity_value_norm:
             mismatches.append(
-                {key: identity_value}
+                {
+                    "field": key,
+                    "document_value": template_value,
+                    "packet_value": identity_value,
+                }
             )
 
         return mismatches

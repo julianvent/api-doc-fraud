@@ -54,13 +54,3 @@ async def upload_template(
     )
 
     return template
-
-
-@router.post("/documents")
-async def documents(
-    document_images: Annotated[
-        list[UploadFile], Form(media_type="multipart/form-data")
-    ],
-):
-    for image in document_images:
-        print(image.filename)
