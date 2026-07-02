@@ -55,7 +55,7 @@ from service.template_ocr import heuristics, scan_cache
 
 log = get_logger(__name__)
 
-NEW_TEMPLATES_DIR     = Path("service/template_ocr/templates")
+TEMPLATES_DIR     = Path("service/template_ocr/templates")
 _LEGACY_TEMPLATES_DIR = Path(OCRConfig().templates_dir)  # service/ocr/templates/ — kept for verify team
 
 
@@ -150,7 +150,7 @@ def _template_slug(document_type: str, country_iso: Optional[str], edition: int)
 
 
 def _template_path(slug: str) -> Path:
-    return NEW_TEMPLATES_DIR / slug / "template.json"
+    return TEMPLATES_DIR / slug / f"{slug}.json"
 
 
 def _parse_slug(slug: str) -> Optional[tuple[str, Optional[str], int]]:
@@ -172,12 +172,17 @@ def list_templates(
     document_type: Optional[str] = None,
     country: Optional[str] = None,
 ) -> list[TemplateSummary]:
-    if not NEW_TEMPLATES_DIR.exists():
+    if not TEMPLATES_DIR.exists():
         return []
 
     out: list[TemplateSummary] = []
-    for json_path in sorted(NEW_TEMPLATES_DIR.glob("*/template.json")):
-        slug = json_path.parent.name
+    for slug_dir in sorted(TEMPLATES_DIR.iterdir()):
+        if not slug_dir.is_dir():
+            continue
+        json_path = slug_dir / f"{slug_dir.name}.json"
+        if not json_path.exists():
+            continue
+        slug = slug_dir.name
         try:
             data = json.loads(json_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
@@ -435,7 +440,7 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
         value_elems = [elements_by_id[i] for i in f.value_element_ids if i in elements_by_id]
 
         if label_elems:
-            fd["label_region"] = _enclosing_rect([e["bbox"] for e in label_elems])
+            fd["label_region"] = _round_rect(_enclosing_rect([e["bbox"] for e in label_elems]))
             # For fields with a real visible label (IDs differ from value IDs),
             # build the label string from OCR text in reading order.
             # For label-less fields (same IDs) keep the user-provided label string.
@@ -443,7 +448,7 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
                 fd["label"] = _reading_order_label(label_elems)
 
         if value_elems:
-            fd["value_region"] = _enclosing_rect([e["bbox"] for e in value_elems])
+            fd["value_region"] = _round_rect(_enclosing_rect([e["bbox"] for e in value_elems]))
 
         # Verify requires label_region non-null. If label elements didn't resolve
         # (e.g. label-less field or cache miss), mirror value_region.
@@ -463,7 +468,7 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
         "doc_family":      req.doc_family,
         "mrz_type":        req.mrz_type,
         "img_path":        img_path,
-        "reference_image": "preprocessed.png",
+        "reference_image": f"{slug}_preprocessed.png",
         "fields":          fields_payload,
         "anchors":         list(req.anchors or []),
         "fingerprint":     req.fingerprint or {},
@@ -480,7 +485,7 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
     if req.generate_id:
         preprocessed = scan_cache.path_for_preprocessed(req.generate_id)
         if preprocessed:
-            shutil.copy2(preprocessed, path.parent / "preprocessed.png")
+            shutil.copy2(preprocessed, path.parent / f"{slug}_preprocessed.png")
 
     # 3. Transition: legacy flat copy for the verify team.
     # TODO: remove when verify team migrates to service/template_ocr/templates/
@@ -502,10 +507,14 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
 
 
 def _persist_template_image(image_bytes: bytes, slug: str, ext: str) -> str:
-    dest = NEW_TEMPLATES_DIR / slug / f"template.{ext}"
+    dest = TEMPLATES_DIR / slug / f"{slug}_sample.{ext}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(image_bytes)
     return dest.as_posix()
+
+
+def _round_rect(rect: dict, n: int = 4) -> dict:
+    return {k: round(v, n) for k, v in rect.items()}
 
 
 def _ensure_rgb(image: np.ndarray) -> np.ndarray:
