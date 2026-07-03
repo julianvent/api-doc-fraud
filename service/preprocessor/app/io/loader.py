@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Set
 
 import cv2
-import fitz
+import pymupdf as fitz
 import numpy as np
 
 from ..models import Page

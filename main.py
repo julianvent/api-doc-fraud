@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.v1.fraud_detection_router import router as fraud_router
+from api.v1.liveness_router import router as liveness_router
 from service.logging_config import configure_logging, get_logger
 
 
@@ -21,8 +22,17 @@ async def lifespan(app: FastAPI):
     log.info("warming up OCR engine")
     from service.ocr import ocr
     ocr.warmup()
-    log.info("ready")
+    log.info("ready OCR")
+    print(" > Warming up liveness models...")
+    from service.liveness import liveness
+    liveness.warmup()
+    print(" > Warming up active-liveness inference pool...")
+    from service import liveness_runtime
+    liveness_runtime.warmup()
+    print(" > READY!")
     yield
+    # Shutdown: drain the inference pool.
+    liveness_runtime.shutdown()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -39,6 +49,7 @@ app.add_middleware(
 )
 
 app.include_router(fraud_router)
+app.include_router(liveness_router)
 
 
 @app.get("/health")

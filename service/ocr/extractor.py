@@ -123,9 +123,9 @@ def _mrz_to_dict(mrz) -> dict:
         "surname"        : mrz.surname,
         "given_names"    : mrz.given_names,
         "country"        : mrz.country,
-        "birth_date"  : mrz.birth_date,
-        "expiry_date" : mrz.expiry_date,
-        "document_number": mrz.number,
+        "date_of_birth"  : mrz.date_of_birth,
+        "expiry_date"    : mrz.expiry_date,
+        "document_number": mrz.document_number,
         "sex"            : mrz.sex,
     })
 
@@ -239,7 +239,7 @@ def extract_with_vision(image_path: str,
                         backend: VisionBackend,
                         output: PipelineOutput,
                         spatial_layout: str = "",
-                        template: dict | None = None) -> dict:
+                        template=None) -> dict:
     prompt = _VLM_EXTRACT_PROMPT
 
     if template is not None:

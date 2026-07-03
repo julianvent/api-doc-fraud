@@ -15,12 +15,9 @@ def _normalize(text: str) -> str:
     )
 
 
-def _lines_in_bottom_band(lines: list[TextLine],
-                          image_height: int,
-                          band_ratio: float = 0.2) -> list[TextLine]:
+def _lines_in_bottom_band(lines: list[TextLine], image_height: int, band_ratio: float = 0.2) -> list[TextLine]:
     if not lines or image_height <= 0:
         return list(lines)
-
     threshold = image_height * (1.0 - band_ratio)
     filtered  = []
     for line in lines:
@@ -55,15 +52,12 @@ def _infer_mrz_type(lines: list[TextLine]) -> Optional[str]:
     return None
 
 
-def scan(lines: list[TextLine],
-         image_height: int) -> tuple[Optional[MRZResult], Optional[str]]:
+def scan(lines: list[TextLine], image_height: int) -> tuple[Optional[MRZResult], Optional[str]]:
     band_lines = _lines_in_bottom_band(lines, image_height)
     if not band_lines:
         band_lines = list(lines)
-
-    mrz_type = _infer_mrz_type(band_lines)
+    mrz_type   = _infer_mrz_type(band_lines)
     if mrz_type is None:
         return None, None
-
     mrz_result = detect(band_lines)
     return mrz_result, mrz_type

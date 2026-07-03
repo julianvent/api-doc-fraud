@@ -17,7 +17,7 @@ from typing import List
 
 from fastapi import UploadFile
 
-from api.v1.schema.verify import BaseVerifyResponse
+from api.v1.schema.verify import BaseVerifyResponse, Identity
 from service import policy, report_builder
 from service.logging_config import get_logger
 from service.metadata import metadata
@@ -54,7 +54,12 @@ def upload_file(file: UploadFile, path: str, id: str) -> Path:
     return dest
 
 
-def verify(files: list[UploadFile], id: str, document_type: str | None = None) -> BaseVerifyResponse:
+def verify(
+    files: list[UploadFile],
+    id: str,
+    identity: Identity,
+    document_type: str | None = None,
+) -> BaseVerifyResponse:
     """Run the full pipeline on the uploaded files of a single document."""
     request_id = str(uuid.uuid4())
     started_at = time.perf_counter()
@@ -81,7 +86,11 @@ def verify(files: list[UploadFile], id: str, document_type: str | None = None) -
         save_image(page, Path(FILES_PATH) / id / "processed")
         for page in processed_pages
     ]
-    ocr_results = ocr.process(ocr_paths, document_type=document_type)
+    ocr_results = ocr.process(
+        ocr_paths,
+        document_type=document_type,
+        identity=identity,
+    )
     timings["ocr"] = int((time.perf_counter() - t0) * 1000)
 
     risk = policy.compute(
@@ -108,5 +117,23 @@ def verify(files: list[UploadFile], id: str, document_type: str | None = None) -
     )
 
 
-# Legacy upload_template removed. Template generation now goes through
-# template_controller.generate_template + template_controller.confirm_template.
+def upload_template(
+    img: UploadFile,
+    document_name: str,
+    document_type: str,
+    country: str,
+    edition: date,
+    state: str | None = None,
+) -> DocumentTemplate:
+    path = upload_file(file=img, path=TEMPLATE_PATH, id="test")
+
+    new_template = template_ocr.upload(
+        document_type=document_type,
+        country=country,
+        state=state,
+        edition=edition,
+        document_name=document_name,
+        img_path=path.as_posix(),
+    )
+
+    return new_template

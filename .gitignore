@@ -29,6 +29,7 @@ Dockerfile
 
 DotsOCR/
 
+templates/
 qdrant_storage/
-
 tmp/
+__pycache__

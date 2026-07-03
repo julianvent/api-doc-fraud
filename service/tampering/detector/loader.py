@@ -1,11 +1,12 @@
 """Load image or PDF files into a uniform list of RGB pages."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
-import fitz
+import pymupdf as fitz
 import numpy as np
 from PIL import Image
 
@@ -16,7 +17,7 @@ _FITZ_BASE_DPI = 72.0
 
 @dataclass
 class Page:
-    image: np.ndarray      # HxWx3 uint8 RGB
+    image: np.ndarray  # HxWx3 uint8 RGB
     page_number: int
     source: str
 
