@@ -51,11 +51,3 @@ class ConfirmTemplateRequest(BaseModel):
             raise ValueError("edition must be a 4-digit year between 1900 and 2100")
         return v
 
-    @model_validator(mode="after")
-    def _unique_keys(self):
-        seen: set[str] = set()
-        for f in self.fields:
-            if f.key in seen:
-                raise ValueError(f"duplicate field key: {f.key!r}")
-            seen.add(f.key)
-        return self

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -433,6 +434,7 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
     # the same IDs for label and value → equal regions fall out naturally.
     _coord_fields = {"label_element_ids", "value_element_ids"}
     fields_payload = []
+    used_keys: set[str] = set()
     for f in req.fields:
         fd = f.model_dump(exclude=_coord_fields)
 
@@ -454,6 +456,10 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
         # (e.g. label-less field or cache miss), mirror value_region.
         if fd.get("label_region") is None and fd.get("value_region") is not None:
             fd["label_region"] = fd["value_region"]
+
+        slug_base = _slugify_label(fd.get("label") or "")
+        fd["key"] = _unique_key(slug_base, used_keys)
+        used_keys.add(fd["key"])
 
         fields_payload.append(fd)
 
@@ -515,6 +521,23 @@ def _persist_template_image(image_bytes: bytes, slug: str, ext: str) -> str:
 
 def _round_rect(rect: dict, n: int = 4) -> dict:
     return {k: round(v, n) for k, v in rect.items()}
+
+
+def _slugify_label(text: str) -> str:
+    nfkd  = unicodedata.normalize("NFKD", text)
+    base  = "".join(c for c in nfkd if not unicodedata.category(c).startswith("M"))
+    clean = re.sub(r"[^a-z0-9\s]", "", base.lower())
+    slug  = re.sub(r"\s+", "_", clean.strip())
+    return slug[:40] or "field"
+
+
+def _unique_key(base: str, existing: set) -> str:
+    if base not in existing:
+        return base
+    i = 2
+    while f"{base}_{i}" in existing:
+        i += 1
+    return f"{base}_{i}"
 
 
 def _ensure_rgb(image: np.ndarray) -> np.ndarray:

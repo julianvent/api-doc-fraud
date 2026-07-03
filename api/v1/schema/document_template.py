@@ -11,7 +11,7 @@ _ALLOWED_FIELD_TYPES = {
 
 
 class TemplateField(BaseModel):
-    key      : str
+    key      : Optional[str] = None
     label    : str
     type     : str            = "text"
     category : Optional[str]  = None
