@@ -477,7 +477,7 @@ def _compare_identity(template_fields: dict, identity: Identity) -> list[dict]:
                 }
             )
 
-        return mismatches
+    return mismatches
 
 
 def process(

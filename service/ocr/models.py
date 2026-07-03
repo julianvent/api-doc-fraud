@@ -10,6 +10,7 @@ class Config:
     ollama_url           : str   = "http://localhost:11434/api/generate"
     ollama_model         : str   = "qwen2.5:7b"
     ocr_output_dir       : str   = "service/ocr/output"
+    templates_dir        : str   = "service/ocr/templates"
 
     # Change between engines
     #   OCR_ENGINE=paddle  uvicorn main:app --reload  ← default

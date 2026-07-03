@@ -12,7 +12,7 @@ from .models import TextLine
 
 TEMPLATES_DIR         = Path(__file__).parent / "templates"
 BBOX_TOLERANCE        = 0.04
-MATCH_THRESHOLD       = 0.80
+MATCH_THRESHOLD       = 0.70
 LABEL_FUZZY_THRESHOLD = 70
 
 _REF_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp")
