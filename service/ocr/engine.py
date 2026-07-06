@@ -2,16 +2,22 @@ from abc import ABC, abstractmethod
 import os
 import json
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
 from PIL import Image as PILImage
 
 
+from service.logging_config import get_logger
 from .models import Config, TextLine
 os.environ["PADDLE_DISABLE_MKLDNN"] = "1"
 
 import numpy as np
+
+
+log = get_logger(__name__)
+
 
 def load_image(path: str | Path, max_side: int = 1_600) -> np.ndarray:
     img = PILImage.open(path).convert("RGB")
@@ -21,8 +27,20 @@ def load_image(path: str | Path, max_side: int = 1_600) -> np.ndarray:
         scale = max_side / longest
         new_w, new_h = int(w * scale), int(h * scale)
         img = img.resize((new_w, new_h), PILImage.LANCZOS)
-        print(f"  Resized: {w}x{h} → {new_w}x{new_h}")
+        log.debug("resized image: %dx%d → %dx%d", w, h, new_w, new_h)
     return np.array(img)
+
+def _autocontrast_if_grayscale(image: np.ndarray) -> np.ndarray:
+    """Apply autocontrast when the image appears grayscale (R≈G≈B channels).
+    Improves detection in dark or low-contrast regions."""
+    from PIL import ImageOps
+    r, g, b = image[:, :, 0], image[:, :, 1], image[:, :, 2]
+    if np.std(r.astype(int) - g.astype(int)) < 3:
+        pil = PILImage.fromarray(image)
+        pil = ImageOps.autocontrast(pil, cutoff=2)
+        return np.array(pil)
+    return image
+
 
 class OCREngine(ABC):
     """
@@ -122,8 +140,7 @@ class DotsOCRAdapter(OCREngine):
         else:
             self._device = "cpu"
 
-        print(f"  [DotsOCR] Model : {self._model_path}")
-        print(f"  [DotsOCR] Device: {self._device}")
+        log.info("[DotsOCR] model=%s device=%s", self._model_path, self._device)
 
         self._model, self._processor = self._load_model()
 
@@ -152,17 +169,6 @@ class DotsOCRAdapter(OCREngine):
         )
         return model, processor
 
-    def _preprocess(self, image: np.ndarray) -> np.ndarray:
-        """Apply autocontrast when the image appears grayscale (R≈G≈B channels).
-        Improves detection in dark or low-contrast regions."""
-        from PIL import ImageOps
-        r, g, b = image[:, :, 0], image[:, :, 1], image[:, :, 2]
-        if np.std(r.astype(int) - g.astype(int)) < 3:
-            pil = PILImage.fromarray(image)
-            pil = ImageOps.autocontrast(pil, cutoff=2)
-            return np.array(pil)
-        return image
-
     def extract(
         self,
         image: "np.ndarray | str | Path",
@@ -174,7 +180,7 @@ class DotsOCRAdapter(OCREngine):
         if isinstance(image, (str, Path)):
             image = load_image(image, max_side)
 
-        image = self._preprocess(image)
+        image = _autocontrast_if_grayscale(image)
         pil_image = PILImage.fromarray(image)
 
         messages = [
@@ -292,21 +298,10 @@ class DolphinOCRAdapter(OCREngine):
         if self._repo_path not in sys.path:
             sys.path.insert(0, self._repo_path)
 
-        print(f"  [DolphinOCR] Model : {self._model_path}")
-        print(f"  [DolphinOCR] Repo  : {self._repo_path}")
+        log.info("[DolphinOCR] model=%s repo=%s", self._model_path, self._repo_path)
 
         from demo_page import DOLPHIN  # type: ignore  (from the cloned Dolphin repo)
         self._model = DOLPHIN(self._model_path)
-
-    def _preprocess(self, image: np.ndarray) -> np.ndarray:
-        """Apply autocontrast for grayscale images (R≈G≈B channels)."""
-        from PIL import ImageOps
-        r, g, b = image[:, :, 0], image[:, :, 1], image[:, :, 2]
-        if np.std(r.astype(int) - g.astype(int)) < 3:
-            pil = PILImage.fromarray(image)
-            pil = ImageOps.autocontrast(pil, cutoff=2)
-            return np.array(pil)
-        return image
 
     def extract(
         self,
@@ -318,27 +313,30 @@ class DolphinOCRAdapter(OCREngine):
         if isinstance(image, (str, Path)):
             image = load_image(image, max_side)
 
-        image = self._preprocess(image)
+        image = _autocontrast_if_grayscale(image)
         pil_image = PILImage.fromarray(image)
 
         save_dir = tempfile.mkdtemp()
-        os.makedirs(os.path.join(save_dir, "output_json"),         exist_ok=True)
-        os.makedirs(os.path.join(save_dir, "markdown", "figures"), exist_ok=True)
+        try:
+            os.makedirs(os.path.join(save_dir, "output_json"),         exist_ok=True)
+            os.makedirs(os.path.join(save_dir, "markdown", "figures"), exist_ok=True)
 
-        process_single_image(
-            image=pil_image,
-            model=self._model,
-            save_dir=save_dir,
-            image_name="doc",
-        )
+            process_single_image(
+                image=pil_image,
+                model=self._model,
+                save_dir=save_dir,
+                image_name="doc",
+            )
 
-        json_path = os.path.join(save_dir, "output_json", "doc.json")
-        if not os.path.exists(json_path):
-            print(f"  [DolphinOCR] Warning: no output JSON in {save_dir}")
-            return []
+            json_path = os.path.join(save_dir, "output_json", "doc.json")
+            if not os.path.exists(json_path):
+                log.warning("[DolphinOCR] no output JSON in %s", save_dir)
+                return []
 
-        with open(json_path, encoding="utf-8") as f:
-            data = json.load(f)
+            with open(json_path, encoding="utf-8") as f:
+                data = json.load(f)
+        finally:
+            shutil.rmtree(save_dir, ignore_errors=True)
 
         return self._parse_output(data)
 

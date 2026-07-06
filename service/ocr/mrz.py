@@ -1,5 +1,25 @@
 import re
+
+from service.logging_config import get_logger
 from .models import TextLine, MRZResult
+from .normalizer import normalize_fields
+
+
+log = get_logger(__name__)
+
+
+def mrz_to_dict(mrz: MRZResult) -> dict:
+    """Convert an MRZResult to a normalized field dict. Single source of truth
+    used by both the template path (ocr.py) and the VLM path (extractor.py)."""
+    return normalize_fields({
+        "surname": mrz.surname,
+        "given_names": mrz.given_names,
+        "country": mrz.country,
+        "date_of_birth": mrz.date_of_birth,
+        "expiry_date": mrz.expiry_date,
+        "document_number": mrz.document_number,
+        "sex": mrz.sex,
+    })
 
 MRZ_PATTERN = re.compile(r'^[A-Z0-9<]{30,44}$')
 
@@ -103,7 +123,7 @@ def _try_checker(checker_cls, mrz_string: str):
     try:
         return checker_cls(mrz_string)
     except Exception as e:
-        print(f"{checker_cls.__name__} failed: {type(e).__name__}: {e}")
+        log.debug("%s failed: %s: %s", checker_cls.__name__, type(e).__name__, e)
         return None
 
 
@@ -145,7 +165,7 @@ def _parse(lines: list[str]) -> MRZResult | None:
 
         checker = _build_checker(lines)
         if checker is None:
-            print("Unsupported MRZ format")
+            log.warning("unsupported MRZ format")
             return None
 
         is_valid = bool(checker)
@@ -154,7 +174,7 @@ def _parse(lines: list[str]) -> MRZResult | None:
         try:
             f = checker.fields()
         except Exception as field_error:
-            print(f"MRZ fields error: {type(field_error).__name__}: {field_error}")
+            log.warning("MRZ fields error: %s: %s", type(field_error).__name__, field_error)
             return MRZResult(
                 valid=False, surname=None, given_names=None, country=None,
                 date_of_birth=None, expiry_date=None, document_number=None, sex=None,
@@ -172,7 +192,7 @@ def _parse(lines: list[str]) -> MRZResult | None:
         )
 
     except Exception as e:
-        print(f"MRZ parse error: {type(e).__name__}: {e}")
+        log.error("MRZ parse error: %s: %s", type(e).__name__, e)
         return None
 
 

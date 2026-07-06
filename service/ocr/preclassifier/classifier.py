@@ -51,6 +51,7 @@ def classify(image: np.ndarray, lines: list[TextLine]) -> PreClassResult:
             signals      = {"face_area_ratio": round(face_area_ratio, 4), "line_count": line_count},
         )
 
+    # Some face but small, and not text-heavy → likely a card-style identity doc.
     if face_present:
         return PreClassResult(
             doc_family   = "identity_photo",

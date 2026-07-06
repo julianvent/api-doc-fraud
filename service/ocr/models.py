@@ -7,6 +7,7 @@ import numpy as np
 @dataclass
 class Config:
     confidence_threshold : float = 0.60
+    templates_dir        : str   = "service/ocr/templates"
     ollama_url           : str   = "http://localhost:11434/api/generate"
     ollama_model         : str   = "qwen2.5:7b"
     ocr_output_dir       : str   = "service/ocr/output"
@@ -54,7 +55,7 @@ class Config:
         default_factory=lambda: os.getenv("OLLAMA_VISION_URL", "http://localhost:11434/api/generate")
     )
     ollama_vision_model: str = field(
-        default_factory=lambda: os.getenv("OLLAMA_VISION_MODEL", "llava")
+        default_factory=lambda: os.getenv("OLLAMA_VISION_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5vl:7b"))
     )
 
 

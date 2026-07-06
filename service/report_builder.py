@@ -94,6 +94,8 @@ def _build_metadata(reports: List[MetadataReport]) -> MetadataModuleSchema:
 
 
 def _build_tampering(reports: List[PageReport]) -> TamperingModuleSchema:
+    from pathlib import Path as _Path
+
     pages = [
         TamperingPageSchema(
             source=r.source,
@@ -108,6 +110,11 @@ def _build_tampering(reports: List[PageReport]) -> TamperingModuleSchema:
             trufor_score=r.trufor.score if r.trufor and r.trufor.ran else None,
             face_trufor_score=(
                 r.face_trufor.score if r.face_trufor and r.face_trufor.ran else None
+            ),
+            overlay_filename=(
+                _Path(r.artifacts.doctamper_overlay).name
+                if r.artifacts and r.artifacts.doctamper_overlay
+                else None
             ),
         )
         for r in reports
