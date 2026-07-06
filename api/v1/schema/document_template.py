@@ -68,12 +68,12 @@ class TemplateDetail(BaseModel):
     mrz_type        : Optional[str]             = None
     img_path        : Optional[str]             = None
     reference_image : Optional[str]             = None
-    fields          : list[TemplateField]       = Field(default_factory=list)
-    anchors         : list[str]                 = Field(default_factory=list)
-    fingerprint     : dict                      = Field(default_factory=dict)
-    field_rules     : dict                      = Field(default_factory=dict)
-    qr_config       : dict                      = Field(default_factory=dict)
-    created_at      : Optional[datetime]        = None
+    fields        : list[TemplateField] = Field(default_factory=list)
+    anchors       : list[str]          = Field(default_factory=list)
+    image_regions : list[dict]         = Field(default_factory=list)
+    field_rules   : dict               = Field(default_factory=dict)
+    qr_config     : dict               = Field(default_factory=dict)
+    created_at    : Optional[datetime] = None
 
 
 # Kept for backwards compatibility with existing callers/imports.

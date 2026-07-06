@@ -207,6 +207,93 @@ def get_template(template_id: str) -> TemplateDetail:
     return _data_to_detail(template_id, data)
 
 
+# ─────────────────────────────────────────── image region detection
+
+
+def _detect_image_regions(img: np.ndarray) -> list[dict]:
+    """Detect frontal face photos using OpenCV Haar Cascade.
+
+    Identity documents (INE, passport, visa) always have a frontal face photo,
+    so the Haar frontal-face detector is more reliable than generic contour or
+    variance approaches for this domain.
+
+    The detected face bbox is expanded by 35% on each side so the returned
+    region covers the full photo frame (background, border), not just the face.
+    Returns at most 3 regions normalised 0–1.
+    """
+    import cv2
+
+    h, w = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    cascade = cv2.CascadeClassifier(cascade_path)
+
+    # detectMultiScale returns [] (tuple) when nothing found, not raises
+    faces = cascade.detectMultiScale(
+        gray,
+        scaleFactor  = 1.05,
+        minNeighbors = 4,
+        minSize      = (int(w * 0.04), int(h * 0.04)),
+        maxSize      = (int(w * 0.60), int(h * 0.60)),
+    )
+
+    if not isinstance(faces, np.ndarray) or len(faces) == 0:
+        log.debug("[IMG-DETECT] no faces found")
+        return []
+
+    log.debug("[IMG-DETECT] faces found: %d", len(faces))
+
+    regions = []
+    for (fx, fy, fw, fh) in faces:
+        pad_x = int(fw * 0.35)
+        pad_y = int(fh * 0.35)
+        x1 = max(0, fx - pad_x)
+        y1 = max(0, fy - pad_y)
+        x2 = min(w, fx + fw + pad_x)
+        y2 = min(h, fy + fh + pad_y)
+        regions.append({
+            "x1": round(x1 / w, 4),
+            "y1": round(y1 / h, 4),
+            "x2": round(x2 / w, 4),
+            "y2": round(y2 / h, 4),
+        })
+
+    # If multiple detections overlap (same face detected twice), keep the largest
+    regions.sort(key=lambda r: (r["x2"] - r["x1"]) * (r["y2"] - r["y1"]), reverse=True)
+    deduped: list[dict] = []
+    for reg in regions:
+        rw = reg["x2"] - reg["x1"]
+        rh = reg["y2"] - reg["y1"]
+        overlaps = any(
+            min(reg["x2"], k["x2"]) - max(reg["x1"], k["x1"]) > rw * 0.5
+            and min(reg["y2"], k["y2"]) - max(reg["y1"], k["y1"]) > rh * 0.5
+            for k in deduped
+        )
+        if not overlaps:
+            deduped.append(reg)
+        if len(deduped) == 3:
+            break
+
+    log.debug("[IMG-DETECT] final regions: %d", len(deduped))
+    return deduped
+
+
+def _image_regions_as_ocr_lines(regions: list[dict], id_offset: int) -> list[OCRLine]:
+    """Convert detected image regions to OCRLine entries with role='image'."""
+    result = []
+    for i, r in enumerate(regions):
+        x1, y1, x2, y2 = r["x1"], r["y1"], r["x2"], r["y2"]
+        result.append(OCRLine(
+            id         = id_offset + i,
+            text       = "",
+            bbox       = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]],
+            confidence = 1.0,
+            role       = "image",
+        ))
+    return result
+
+
 # ─────────────────────────────────────────── generate
 
 
@@ -293,17 +380,17 @@ def generate_template(
         preclass = preclassify(np_img, lines)
 
         return GenerateResponse(
-            generate_id        = generate_id,
-            expires_at         = expires_at,
-            image_dims         = (int(width), int(h)),
-            preclass           = PreclassPayload(
+            generate_id             = generate_id,
+            expires_at              = expires_at,
+            image_dims              = (int(width), int(h)),
+            preclass                = PreclassPayload(
                 doc_family  = preclass.doc_family,
                 country_iso = preclass.country_iso,
                 mrz_type    = preclass.mrz_type,
                 confidence  = preclass.confidence,
             ),
-            qr_config          = _detect_qr(np_img),
-            ocr_elements       = ocr_elements,
+            qr_config    = _detect_qr(np_img),
+            ocr_elements = ocr_elements,
         )
 
     # ── auto / manual mode (PaddleOCR). manual returns neutral detected
@@ -330,18 +417,19 @@ def generate_template(
             )
             for e in elements
         ]
+        ocr_lines += _image_regions_as_ocr_lines(_detect_image_regions(np_img), id_offset=len(ocr_lines))
         return GenerateResponse(
-            generate_id        = generate_id,
-            expires_at         = expires_at,
-            image_dims         = (int(width), int(h)),
-            preclass           = PreclassPayload(
+            generate_id = generate_id,
+            expires_at  = expires_at,
+            image_dims  = (int(width), int(h)),
+            preclass    = PreclassPayload(
                 doc_family  = preclass.doc_family,
                 country_iso = preclass.country_iso,
                 mrz_type    = preclass.mrz_type,
                 confidence  = preclass.confidence,
             ),
-            qr_config          = _detect_qr(np_img),
-            ocr_lines          = ocr_lines,
+            qr_config = _detect_qr(np_img),
+            ocr_lines = ocr_lines,
         )
 
     preclass = preclassify(np_img, lines)
@@ -371,6 +459,7 @@ def generate_template(
         )
         for i, line in enumerate(lines)
     ]
+    ocr_lines += _image_regions_as_ocr_lines(_detect_image_regions(np_img), id_offset=len(ocr_lines))
 
     return GenerateResponse(
         generate_id        = generate_id,
@@ -476,9 +565,9 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
         "img_path":        img_path,
         "reference_image": f"{slug}_preprocessed.png",
         "fields":          fields_payload,
-        "anchors":         list(req.anchors or []),
-        "fingerprint":     req.fingerprint or {},
-        "field_rules":     req.field_rules or {},
+        "anchors":       list(req.anchors or []),
+        "image_regions": [r.model_dump() for r in (req.image_regions or [])],
+        "field_rules":   req.field_rules or {},
         "qr_config":       req.qr_config or {},
         "created_at":      datetime.now(timezone.utc).isoformat(),
     }
@@ -640,10 +729,10 @@ def _data_to_detail(slug: str, data: dict) -> TemplateDetail:
         mrz_type        = data.get("mrz_type"),
         img_path        = data.get("img_path"),
         reference_image = data.get("reference_image"),
-        fields          = fields,
-        anchors         = list(data.get("anchors") or []),
-        fingerprint     = data.get("fingerprint") or {},
-        field_rules     = data.get("field_rules") or {},
+        fields        = fields,
+        anchors       = list(data.get("anchors") or []),
+        image_regions = list(data.get("image_regions") or []),
+        field_rules   = data.get("field_rules") or {},
         qr_config       = data.get("qr_config") or {},
         created_at      = _parse_dt(data.get("created_at")),
     )
@@ -662,7 +751,6 @@ def _index_template_in_qdrant(slug: str, data: dict) -> None:
     try:
         from service.ocr import matching
         from service.ocr.preclassifier import PreClassResult
-        from service.template_ocr.schema import Fingerprint
     except Exception as e:
         log.warning("qdrant deps unavailable: %s", e)
         return
@@ -672,11 +760,7 @@ def _index_template_in_qdrant(slug: str, data: dict) -> None:
         log.info("qdrant disabled / unavailable — skipping upsert for slug=%s", slug)
         return
 
-    fp_data = data.get("fingerprint") or {}
-    fp = Fingerprint(
-        layout_desc = fp_data.get("layout_desc"),
-        anchors     = list(data.get("anchors") or []),
-    )
+    fp = matching.Fingerprint(anchors=list(data.get("anchors") or []))
     preclass = PreClassResult(
         doc_family  = data.get("doc_family") or "unknown",
         country_iso = data.get("country_iso"),
@@ -684,7 +768,7 @@ def _index_template_in_qdrant(slug: str, data: dict) -> None:
     )
     text = matching.serialize_for_template(fp, preclass)
     if not text:
-        log.warning("empty fingerprint text — skipping qdrant upsert for slug=%s", slug)
+        log.warning("empty embedding text — skipping qdrant upsert for slug=%s", slug)
         return
 
     vector = matching.embed(text, cfg.embedding_url, cfg.embedding_model)

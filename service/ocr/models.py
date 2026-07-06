@@ -55,7 +55,7 @@ class Config:
         default_factory=lambda: os.getenv("OLLAMA_VISION_URL", "http://localhost:11434/api/generate")
     )
     ollama_vision_model: str = field(
-        default_factory=lambda: os.getenv("OLLAMA_VISION_MODEL", "llava")
+        default_factory=lambda: os.getenv("OLLAMA_VISION_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5vl:7b"))
     )
 
 

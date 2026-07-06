@@ -12,7 +12,7 @@ from .models import TextLine
 
 TEMPLATES_DIR         = Path(__file__).parent.parent / "template_ocr" / "templates"
 BBOX_TOLERANCE        = 0.04
-MATCH_THRESHOLD       = 95
+MATCH_THRESHOLD       = 0.60
 LABEL_FUZZY_THRESHOLD = 70
 
 _MIN_GOOD_MATCHES = 10
@@ -254,11 +254,14 @@ def match(lines: list[TextLine], template: dict) -> MatchResult:
     unmatched_fields : list[str]                 = []
     field_hits       = 0
 
-    # Collect all label-region lines upfront to exclude them from value extraction
+    # Collect all label-region lines upfront to exclude them from value extraction.
+    # Positional-only fields (label_region == value_region) are skipped: their
+    # region IS the value region, so we must not mark those lines as labels.
     all_label_ids: set[int] = set()
     for fd in fields:
         lr = fd.get("label_region")
-        if lr:
+        vr = fd.get("value_region")
+        if lr and lr != vr:
             all_label_ids.update(id(l) for l in _find_lines_in_region(lines, lr, tolerance=0.0))
 
     for field_def in fields:
@@ -268,26 +271,43 @@ def match(lines: list[TextLine], template: dict) -> MatchResult:
         value_region   = field_def.get("value_region")
         label_latin    = _latin_part(expected_label)
 
-        # ── positional label match ─────────────────────────────────────────
-        if label_region:
+        # Positional-only field: no visible label to search for.
+        # Detected when label_region == value_region (confirm mirrored them because
+        # the user selected the same elements for both, e.g. MRZ, visa number).
+        # Also applies when label text is empty after stripping non-Latin chars.
+        _positional = not label_latin or (
+            label_region is not None and label_region == value_region
+        )
+
+        if _positional:
+            # Count as matched if the value region actually contains OCR text.
+            value_candidates = _find_lines_in_region(lines, value_region) if value_region else []
+            label_found      = bool(value_candidates)
+            label_line       = None
+        elif label_region:
             label_candidates = _find_lines_in_region(lines, label_region)
-            label_line       = _find_label_line(label_candidates, label_latin) if label_latin else None
+            label_line       = _find_label_line(label_candidates, label_latin)
             label_found      = label_line is not None
         else:
             # fallback: global text search for templates without label_region
             ocr_text    = " ".join(l.text for l in lines)
-            label_found = fuzz.partial_ratio(label_latin, ocr_text) >= LABEL_FUZZY_THRESHOLD if label_latin else False
+            label_found = fuzz.partial_ratio(label_latin, ocr_text) >= LABEL_FUZZY_THRESHOLD
             label_line  = _find_label_line(lines, label_latin) if label_found else None
 
         if label_found:
-            field_hits  += 1
-            value_lines  = _find_lines_in_region(lines, value_region) if value_region else []
-            value_lines  = [l for l in value_lines if id(l) not in all_label_ids]
+            field_hits += 1
+            value_lines = _find_lines_in_region(lines, value_region) if value_region else []
 
-            if label_line is not None:
-                value_lines = [l for l in value_lines if _cy(l) > _cy(label_line)]
+            if _positional:
+                # Return all lines in the region (e.g. multi-row MRZ, visa number).
+                # No label-exclusion filter and no first-row truncation.
+                pass
+            else:
+                value_lines = [l for l in value_lines if id(l) not in all_label_ids]
+                if label_line is not None:
+                    value_lines = [l for l in value_lines if _cy(l) > _cy(label_line)]
+                value_lines = _first_row(value_lines)
 
-            value_lines      = _first_row(value_lines)
             field_lines[key] = value_lines
         else:
             unmatched_fields.append(key)

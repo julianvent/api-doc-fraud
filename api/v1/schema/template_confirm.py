@@ -4,6 +4,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from api.v1.schema.document_template import TemplateField
+from api.v1.schema.template_generate import BBoxRegion
 
 
 _DOCUMENT_TYPE_RE = re.compile(r"^[a-z0-9_]{1,60}$")
@@ -21,10 +22,10 @@ class ConfirmTemplateRequest(BaseModel):
     doc_family    : Optional[str]               = None
     mrz_type      : Optional[str]               = None
     fields        : list[TemplateField]
-    anchors       : list[str]                   = Field(default_factory=list)
-    fingerprint   : dict                        = Field(default_factory=dict)
-    field_rules   : dict                        = Field(default_factory=dict)
-    qr_config     : dict                        = Field(default_factory=dict)
+    anchors       : list[str]        = Field(default_factory=list)
+    image_regions : list[BBoxRegion] = Field(default_factory=list)
+    field_rules   : dict             = Field(default_factory=dict)
+    qr_config     : dict             = Field(default_factory=dict)
 
     @field_validator("document_type")
     @classmethod

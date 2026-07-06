@@ -15,11 +15,6 @@ class FieldSpec(BaseModel):
     value_region : Optional[dict] = None  # {x1, y1, x2, y2}
 
 
-class Fingerprint(BaseModel):
-    layout_desc : Optional[str] = None
-    anchors     : list[str]     = Field(default_factory=list)
-
-
 class QRConfig(BaseModel):
     present    : bool           = False
     signed     : bool           = False
@@ -48,7 +43,6 @@ class Template(BaseModel):
     img_path          : Optional[str]          = None
     reference_image   : Optional[str]          = None
     anchors           : list[str]              = Field(default_factory=list)
-    fingerprint       : Optional[Fingerprint]  = None
     fields            : list[FieldSpec]        = Field(default_factory=list)
     field_rules       : dict[str, dict]        = Field(default_factory=dict)
     qr_config         : Optional[QRConfig]     = None

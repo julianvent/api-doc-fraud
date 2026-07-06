@@ -1,8 +1,11 @@
 import logging
+import os
+import tempfile
 import threading
 from pathlib import Path
 
 import cv2
+import numpy as np
 from rapidfuzz import fuzz
 
 from api.v1.schema.verify import Identity
@@ -265,6 +268,73 @@ def _field_value(template_fields: dict, canonical_key: str) -> str | None:
     return None
 
 
+def _verify_anchors(
+    lines: list, template: dict
+) -> tuple[list[str], list[dict]]:
+    """Check template anchor texts against OCR lines.
+    An anchor is considered found when partial_ratio >= 70 against the full OCR text.
+    Flags when zero anchors match OR more than half are missing.
+    Returns (flags, details) where details is [{"text": str, "found": bool}, ...]."""
+    anchors = template.get("anchors") or []
+    if not anchors:
+        return [], []
+
+    all_text = " ".join(l.text for l in lines).upper()
+    details = [
+        {"text": a, "found": fuzz.partial_ratio(a.upper(), all_text) >= 70}
+        for a in anchors
+    ]
+    found_count = sum(1 for d in details if d["found"])
+    print(f"[ANCHOR] checked {len(anchors)} anchors, found {found_count}/{len(anchors)}")
+
+    flags: list[str] = []
+    if found_count == 0 or found_count < len(anchors) / 2:
+        flags.append("anchor_mismatch")
+    return flags, details
+
+
+def _verify_image_regions(
+    image: np.ndarray, template: dict
+) -> tuple[list[str], list[dict]]:
+    """Check if the submitted document contains a face/photo in each template image_region.
+    Uses Haar Cascade frontal-face detection; a face center within the region (±5%) counts.
+    Returns (flags, details) where details is [{"region": dict, "face_detected": bool}, ...]."""
+    regions = template.get("image_regions") or []
+    if not regions:
+        return [], []
+
+    h, w = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    cascade = cv2.CascadeClassifier(cascade_path)
+    faces = cascade.detectMultiScale(
+        gray, scaleFactor=1.05, minNeighbors=4,
+        minSize=(int(w * 0.04), int(h * 0.04)),
+        maxSize=(int(w * 0.60), int(h * 0.60)),
+    )
+
+    face_centers: list[tuple[float, float]] = []
+    if isinstance(faces, np.ndarray) and len(faces) > 0:
+        for (fx, fy, fw, fh) in faces:
+            face_centers.append(((fx + fw / 2) / w, (fy + fh / 2) / h))
+
+    tol = 0.05
+    details = []
+    for reg in regions:
+        in_region = any(
+            reg["x1"] - tol <= cx <= reg["x2"] + tol
+            and reg["y1"] - tol <= cy <= reg["y2"] + tol
+            for cx, cy in face_centers
+        )
+        details.append({"region": reg, "face_detected": in_region})
+        print(f"[IMG-RGN] region={reg} face_detected={in_region}")
+
+    flags: list[str] = []
+    if details and not any(d["face_detected"] for d in details):
+        flags.append("image_region_mismatch")
+    return flags, details
+
+
 def _compare_mrz(template_fields: dict, mrz) -> list[dict]:
     mrz_dict = _mrz_to_dict(mrz)
     mismatches = []
@@ -414,7 +484,9 @@ def _run(
         template_fields = normalize_fields(template_fields)
         print(f"[TMPL] extracted fields: {template_fields}")
 
-        mrz_flags: list[str] = []
+        anchor_flags, anchor_details   = _verify_anchors(lines, best_template)
+        img_rgn_flags, img_rgn_details = _verify_image_regions(image, best_template)
+        mrz_flags: list[str] = anchor_flags + img_rgn_flags
         mrz_mismatches: list[dict] = []
 
         if mrz:
@@ -444,7 +516,9 @@ def _run(
                 Path(config.ocr_output_dir) / f"{Path(image_path).stem}_template.png"
             )
             visualize_template_match(
-                image_bgr, lines, best_template, template_match_confidence, str(vis_path)
+                image_bgr, lines, best_template, template_match_confidence, str(vis_path),
+                anchor_details=anchor_details,
+                image_region_details=img_rgn_details,
             )
         except Exception as e:
             print(f"[VIS] template visualization failed (non-critical): {type(e).__name__}: {e}")
@@ -459,6 +533,8 @@ def _run(
             "mrz": _mrz_to_dict(mrz) if mrz else None,
             "unmatched_fields": template_match_confidence.unmatched_fields,
             "flags": mrz_flags,
+            "anchor_verification": anchor_details,
+            "image_region_verification": img_rgn_details,
             "mrz_mismatches": mrz_mismatches,
             "identity_mismatches": identity_mismatches,
         }
@@ -467,7 +543,20 @@ def _run(
     output = _build_pipeline_output(document_type, mrz, lines, ocr_confidence)
     spatial = _spatial_layout(lines)
     _save_visualization(image, output, Path(image_path), config)
-    return extract_with_vision(str(image_path), vision_backend, output, spatial, None)
+
+    # Write the preprocessed (aligned) image to a temp file so the VLM always
+    # receives the same image that OCR processed — not the original which may
+    # be a PDF or un-aligned JPEG that the vision model cannot interpret.
+    _fd, _tmp = tempfile.mkstemp(suffix=".jpg")
+    os.close(_fd)
+    try:
+        cv2.imwrite(_tmp, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        return extract_with_vision(_tmp, vision_backend, output, spatial, None)
+    finally:
+        try:
+            os.unlink(_tmp)
+        except OSError:
+            pass
 
 
 # ── public API ─────────────────────────────────────────────────────────────────
