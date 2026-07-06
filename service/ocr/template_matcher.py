@@ -11,7 +11,8 @@ from .models import TextLine
 
 
 TEMPLATES_DIR         = Path(__file__).parent.parent / "template_ocr" / "templates"
-BBOX_TOLERANCE        = 0.04
+BBOX_TOLERANCE_X = 0.04   # horizontal — minor x-drift after alignment
+BBOX_TOLERANCE_Y = 0.01   # vertical   — tight to avoid capturing adjacent rows
 MATCH_THRESHOLD       = 0.70
 LABEL_FUZZY_THRESHOLD = 70
 
@@ -44,10 +45,11 @@ def align_to_template(
     doc_image: np.ndarray,
     template: dict,
 ) -> tuple[np.ndarray, bool]:
-    """Warp doc_image to match the template reference image using ORB + homography.
+    """Warp doc_image to match the template reference image using ORB + partial affine.
 
-    Returns (aligned_image, True) on success, (doc_image, False) if the reference
-    image is missing or not enough keypoints are matched.
+    Uses estimateAffinePartial2D (translation + rotation + uniform scale, 4 DoF)
+    instead of findHomography (8 DoF) to avoid perspective distortion on flat documents.
+    Returns (aligned_image, True) on success, (doc_image, False) otherwise.
     """
     ref_image = _load_ref_image(template)
     if ref_image is None:
@@ -56,29 +58,52 @@ def align_to_template(
     gray_doc = cv2.cvtColor(doc_image, cv2.COLOR_RGB2GRAY)
     gray_ref = cv2.cvtColor(ref_image,  cv2.COLOR_RGB2GRAY)
 
-    orb              = cv2.ORB_create(nfeatures=3000)
-    kp_ref, des_ref  = orb.detectAndCompute(gray_ref, None)
-    kp_doc, des_doc  = orb.detectAndCompute(gray_doc, None)
+    orb             = cv2.ORB_create(nfeatures=3000)
+    kp_ref, des_ref = orb.detectAndCompute(gray_ref, None)
+    kp_doc, des_doc = orb.detectAndCompute(gray_doc, None)
 
     if des_ref is None or des_doc is None:
         return doc_image, False
 
-    bf      = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-    matches = sorted(bf.match(des_ref, des_doc), key=lambda m: m.distance)
-    good    = matches[: max(_MIN_GOOD_MATCHES, len(matches) // 3)]
+    # knnMatch + Lowe's ratio test — eliminates ambiguous matches that cause
+    # distortion when passed to the transform estimator.
+    bf         = cv2.BFMatcher(cv2.NORM_HAMMING)
+    raw        = bf.knnMatch(des_ref, des_doc, k=2)
+    good       = [m for pair in raw if len(pair) == 2
+                  for m, n in [pair] if m.distance < 0.75 * n.distance]
+    good       = sorted(good, key=lambda m: m.distance)[:200]
 
     if len(good) < _MIN_GOOD_MATCHES:
+        print(f"[ALIGN] not enough good matches: {len(good)} < {_MIN_GOOD_MATCHES}")
         return doc_image, False
 
     src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
     dst_pts = np.float32([kp_doc[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
 
-    H, mask = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
-    if H is None or int(mask.sum()) < _MIN_GOOD_MATCHES:
+    # Partial affine: translation + rotation + uniform scale only.
+    # Avoids the shear / perspective deformation that full homography allows.
+    M, mask = cv2.estimateAffinePartial2D(
+        dst_pts, src_pts, method=cv2.RANSAC, ransacReprojThreshold=5.0
+    )
+    inliers = int(mask.sum()) if mask is not None else 0
+
+    if M is None or inliers < _MIN_GOOD_MATCHES:
+        print(f"[ALIGN] affine estimation failed: inliers={inliers}")
+        return doc_image, False
+
+    # Sanity checks — reject transforms that are physically implausible.
+    scale = float(np.sqrt(M[0, 0] ** 2 + M[0, 1] ** 2))
+    angle = float(np.degrees(np.arctan2(M[0, 1], M[0, 0])))
+    if not (0.5 <= scale <= 2.0):
+        print(f"[ALIGN] implausible scale {scale:.2f} — skipping alignment")
+        return doc_image, False
+    if abs(angle) > 30:
+        print(f"[ALIGN] implausible rotation {angle:.1f}° — skipping alignment")
         return doc_image, False
 
     h, w    = ref_image.shape[:2]
-    aligned = cv2.warpPerspective(doc_image, H, (w, h), flags=cv2.INTER_LINEAR)
+    aligned = cv2.warpAffine(doc_image, M, (w, h), flags=cv2.INTER_LINEAR)
+    print(f"[ALIGN] ok — inliers={inliers}/{len(good)}, scale={scale:.3f}, angle={angle:.1f}°")
     return aligned, True
 
 
@@ -180,8 +205,12 @@ def _bbox_bounds(line: TextLine) -> tuple[float, float, float, float] | None:
     return min(xs), min(ys), max(xs), max(ys)
 
 
-def _overlap_ratio(line: TextLine, region: dict, tolerance: float = BBOX_TOLERANCE) -> float:
-    """Fraction of the bbox area that falls inside region (expanded by tolerance)."""
+def _overlap_ratio(
+    line: TextLine, region: dict,
+    tol_x: float = BBOX_TOLERANCE_X,
+    tol_y: float = BBOX_TOLERANCE_Y,
+) -> float:
+    """Fraction of the line's bbox area that falls inside region (expanded by tol_x/tol_y)."""
     bounds = _bbox_bounds(line)
     if bounds is None:
         return 0.0
@@ -189,42 +218,35 @@ def _overlap_ratio(line: TextLine, region: dict, tolerance: float = BBOX_TOLERAN
     bbox_area = (bx2 - bx1) * (by2 - by1)
     if bbox_area <= 0:
         return 0.0
-
-    rx1 = region["x1"] - tolerance
-    ry1 = region["y1"] - tolerance
-    rx2 = region["x2"] + tolerance
-    ry2 = region["y2"] + tolerance
-
+    rx1, ry1 = region["x1"] - tol_x, region["y1"] - tol_y
+    rx2, ry2 = region["x2"] + tol_x, region["y2"] + tol_y
     ix1, iy1 = max(bx1, rx1), max(by1, ry1)
     ix2, iy2 = min(bx2, rx2), min(by2, ry2)
     if ix2 <= ix1 or iy2 <= iy1:
         return 0.0
-
     return ((ix2 - ix1) * (iy2 - iy1)) / bbox_area
 
 
-def _line_in_region(line: TextLine, region: dict, tolerance: float = BBOX_TOLERANCE) -> bool:
-    return _overlap_ratio(line, region, tolerance) >= OVERLAP_THRESHOLD
+def _line_in_region(
+    line: TextLine, region: dict,
+    tol_x: float = BBOX_TOLERANCE_X,
+    tol_y: float = BBOX_TOLERANCE_Y,
+) -> bool:
+    return _overlap_ratio(line, region, tol_x, tol_y) >= OVERLAP_THRESHOLD
 
 
-def _find_lines_in_region(lines: list[TextLine], region: dict, tolerance: float = BBOX_TOLERANCE) -> list[TextLine]:
-    return [l for l in lines if _line_in_region(l, region, tolerance)]
-
-
-_ROW_GROUP_THRESHOLD = 0.03
+def _find_lines_in_region(
+    lines: list[TextLine], region: dict,
+    tol_x: float = BBOX_TOLERANCE_X,
+    tol_y: float = BBOX_TOLERANCE_Y,
+) -> list[TextLine]:
+    return [l for l in lines if _line_in_region(l, region, tol_x, tol_y)]
 
 
 def _cy(line: TextLine) -> float:
     ys = [pt[1] for pt in line.bbox]
     return (min(ys) + max(ys)) / 2
 
-
-def _first_row(lines: list[TextLine]) -> list[TextLine]:
-    if not lines:
-        return lines
-    sorted_lines = sorted(lines, key=_cy)
-    base_y = _cy(sorted_lines[0])
-    return [l for l in sorted_lines if _cy(l) - base_y <= _ROW_GROUP_THRESHOLD]
 
 
 def _find_label_line(lines: list[TextLine], label_latin: str) -> TextLine | None:
@@ -253,16 +275,6 @@ def match(lines: list[TextLine], template: dict) -> MatchResult:
     field_lines      : dict[str, list[TextLine]] = {}
     unmatched_fields : list[str]                 = []
     field_hits       = 0
-
-    # Collect all label-region lines upfront to exclude them from value extraction.
-    # Positional-only fields (label_region == value_region) are skipped: their
-    # region IS the value region, so we must not mark those lines as labels.
-    all_label_ids: set[int] = set()
-    for fd in fields:
-        lr = fd.get("label_region")
-        vr = fd.get("value_region")
-        if lr and lr != vr:
-            all_label_ids.update(id(l) for l in _find_lines_in_region(lines, lr, tolerance=0.0))
 
     for field_def in fields:
         key            = field_def.get("key", "")
@@ -300,13 +312,16 @@ def match(lines: list[TextLine], template: dict) -> MatchResult:
 
             if _positional:
                 # Return all lines in the region (e.g. multi-row MRZ, visa number).
-                # No label-exclusion filter and no first-row truncation.
+                # No truncation — the value spans as many rows as the region contains.
                 pass
             else:
-                value_lines = [l for l in value_lines if id(l) not in all_label_ids]
+                # Exclude only the matched label line for THIS field.
+                # A global exclude-list would incorrectly remove lines that are
+                # valid values for neighbouring fields with overlapping regions.
                 if label_line is not None:
-                    value_lines = [l for l in value_lines if _cy(l) > _cy(label_line)]
-                value_lines = _first_row(value_lines)
+                    value_lines = [l for l in value_lines if l is not label_line]
+                # All remaining lines in the bbox are part of the value —
+                # _row_order in ocr.py will sort and join them.
 
             field_lines[key] = value_lines
         else:
