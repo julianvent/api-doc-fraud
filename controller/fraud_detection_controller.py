@@ -5,31 +5,36 @@ Order matters:
 Tampering must run on RAW pixels (before preprocessor), or its forensic
 signal is invalid. Metadata is byte-level and runs first because it's cheap.
 """
+
 from __future__ import annotations
 
 import shutil
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List
 
 from fastapi import UploadFile
 
-from api.v1.schema.verify import BaseVerifyResponse
+from api.v1.schema.verify import BaseVerifyResponse, Identity
 from service import policy, report_builder
 from service.metadata import metadata
 from service.ocr import ocr
 from service.preprocessor import preprocessor
 from service.preprocessor.app.io.writer import save_image
 from service.tampering import tampering
+from service.template_ocr import template_ocr
 
-DEST_PATH = "files"
+from model.document_template import DocumentTemplate
+
+FILES_PATH = "files"
+TEMPLATE_PATH = "template"
 
 
-def upload_file(file: UploadFile, id: str) -> Path:
+def upload_file(file: UploadFile, path: str, id: str) -> Path:
     """Save uploaded file under files/<id>/. Returns the saved path."""
-    dest_dir = Path(f"{DEST_PATH}/{id}")
+    dest_dir = Path(f"{path}/{id}")
     dest_dir.mkdir(parents=True, exist_ok=True)
     path = dest_dir / file.filename
     with path.open(mode="wb") as buffer:
@@ -38,12 +43,17 @@ def upload_file(file: UploadFile, id: str) -> Path:
     return path
 
 
-def verify(files: list[UploadFile], id: str) -> BaseVerifyResponse:
+def verify(
+    files: list[UploadFile],
+    id: str,
+    identity: Identity,
+    document_type: str | None = None,
+) -> BaseVerifyResponse:
     """Run the full pipeline on the uploaded files of a single document."""
     request_id = str(uuid.uuid4())
     started_at = time.perf_counter()
 
-    paths: List[Path] = [upload_file(f, id) for f in files]
+    paths: List[Path] = [upload_file(file=f, path=FILES_PATH, id=id) for f in files]
 
     timings: dict[str, int] = {}
 
@@ -60,13 +70,23 @@ def verify(files: list[UploadFile], id: str) -> BaseVerifyResponse:
     timings["preprocessor"] = int((time.perf_counter() - t0) * 1000)
 
     t0 = time.perf_counter()
-    #ocr_results = ocr.extract(processed_pages, output_subdir=id) # De la branch Andy
-    ocr_paths = [save_image(page, Path(DEST_PATH) / id / "processed") for page in processed_pages]
-    ocr_results = ocr.process(ocr_paths)
+    # ocr_results = ocr.extract(processed_pages, output_subdir=id) # De la branch Andy
+    ocr_paths = [
+        save_image(page, Path(FILES_PATH) / id / "processed")
+        for page in processed_pages
+    ]
+    ocr_results = ocr.process(
+        ocr_paths,
+        document_type=document_type,
+        identity=identity,
+    )
     timings["ocr"] = int((time.perf_counter() - t0) * 1000)
 
     risk = policy.compute(
-        metadata_reports, tampering_reports, processed_pages, ocr_results,
+        metadata_reports,
+        tampering_reports,
+        processed_pages,
+        ocr_results,
     )
 
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -84,3 +104,25 @@ def verify(files: list[UploadFile], id: str) -> BaseVerifyResponse:
         risk=risk,
         ocr_engine_name="paddleocr",
     )
+
+
+def upload_template(
+    img: UploadFile,
+    document_name: str,
+    document_type: str,
+    country: str,
+    edition: date,
+    state: str | None = None,
+) -> DocumentTemplate:
+    path = upload_file(file=img, path=TEMPLATE_PATH, id="test")
+
+    new_template = template_ocr.upload(
+        document_type=document_type,
+        country=country,
+        state=state,
+        edition=edition,
+        document_name=document_name,
+        img_path=path.as_posix(),
+    )
+
+    return new_template

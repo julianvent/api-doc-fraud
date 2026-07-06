@@ -1,4 +1,5 @@
 """Reusable enums and sub-schemas for the public API response."""
+
 from __future__ import annotations
 
 from enum import Enum
@@ -14,6 +15,7 @@ class Verdict(str, Enum):
 
 
 # ── metadata ──────────────────────────────────────────────────────────────────
+
 
 class MetadataFlagSchema(BaseModel):
     code: str
@@ -32,11 +34,12 @@ class MetadataFileReportSchema(BaseModel):
 
 
 class MetadataModuleSchema(BaseModel):
-    files: List[MetadataFileReportSchema]
+    pages: List[MetadataFileReportSchema]
     aggregate_suspicion: float
 
 
 # ── tampering ─────────────────────────────────────────────────────────────────
+
 
 class TamperingPageSchema(BaseModel):
     source: str
@@ -58,6 +61,7 @@ class TamperingModuleSchema(BaseModel):
 
 # ── preprocessor ──────────────────────────────────────────────────────────────
 
+
 class PreprocessorPageSchema(BaseModel):
     source: str
     page_number: int
@@ -73,19 +77,31 @@ class PreprocessorModuleSchema(BaseModel):
 
 # ── ocr ───────────────────────────────────────────────────────────────────────
 
+
 class OCRPageSchema(BaseModel):
     page_number: int
-    document_type: Optional[str]
-    verdict: Optional[str]
-    confidence_avg: float
+    document_type: Optional[str] = None
+    ocr_confidence: float = 0.0
+    template_match_confidence: Optional[float] = None
+    fields: Optional[dict] = None
+    extras: Optional[dict] = None
+    flags: Optional[List[str]] = None
 
 
 class OCRModuleSchema(BaseModel):
     engine: str
     pages: List[OCRPageSchema]
+    consistency_verification: ConsistencyVerification
+
+
+class ConsistencyVerification(BaseModel):
+    consistency: bool
+    identity_inconsistencies: Optional[list[dict]] = []
+    mrz_inconsistencies: Optional[list[dict]] = []
 
 
 # ── modules wrapper ───────────────────────────────────────────────────────────
+
 
 class ModulesReportSchema(BaseModel):
     metadata: MetadataModuleSchema

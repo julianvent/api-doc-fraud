@@ -1,4 +1,5 @@
 """Raw metadata collection. Extracts every available signal without judgment."""
+
 from __future__ import annotations
 
 import json
@@ -7,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 from PIL import ExifTags, Image
 
 from .whitelists import (
@@ -79,7 +80,9 @@ class MetadataExtractor:
         return snap
 
     def _extract_image(self, path: Path) -> MetadataSnapshot:
-        snap = MetadataSnapshot(source=str(path), format=path.suffix.lower().lstrip("."))
+        snap = MetadataSnapshot(
+            source=str(path), format=path.suffix.lower().lstrip(".")
+        )
         try:
             with Image.open(path) as img:
                 img.load()
@@ -136,6 +139,7 @@ class MetadataExtractor:
 
 # ── image helpers ────────────────────────────────────────────────────────────
 
+
 def _read_exif(img: Image.Image) -> dict:
     raw = img.getexif()
     if not raw:
@@ -174,6 +178,7 @@ def _read_text_chunks(img: Image.Image) -> dict[str, str]:
 
 
 # ── file-level helpers ───────────────────────────────────────────────────────
+
 
 def _safe_filesize(path: Path) -> int:
     try:
@@ -256,6 +261,7 @@ def _pdf_eof_count(path: Path) -> int:
 
 
 # ── serialization ────────────────────────────────────────────────────────────
+
 
 def _to_jsonable(val: Any) -> Any:
     if isinstance(val, bytes):
