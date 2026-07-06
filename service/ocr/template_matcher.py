@@ -12,7 +12,7 @@ from .models import TextLine
 
 TEMPLATES_DIR         = Path(__file__).parent.parent / "template_ocr" / "templates"
 BBOX_TOLERANCE        = 0.04
-MATCH_THRESHOLD       = 0.60
+MATCH_THRESHOLD       = 0.70
 LABEL_FUZZY_THRESHOLD = 70
 
 _MIN_GOOD_MATCHES = 10

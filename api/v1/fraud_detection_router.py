@@ -1,6 +1,8 @@
 import asyncio
 import json as _json
+import re
 from datetime import date
+from pathlib import Path
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
@@ -12,7 +14,10 @@ from api.v1.schema.template_generate import GenerateResponse
 from api.v1.schema.verify import BaseVerifyRequest, BaseVerifyResponse, Identity
 from controller import fraud_detection_controller as fraud_controller
 from controller import template_controller
+from service.tampering.paths import OUTPUT_DIR as _TAMPERING_OUTPUT_DIR
 from service.template_ocr import scan_cache as _scan_cache
+
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
 router = APIRouter(prefix="/v1")
@@ -153,3 +158,29 @@ async def get_session_image(generate_id: str):
                    "(expired, already confirmed, or mode=auto)",
         )
     return FileResponse(path, media_type="image/png")
+
+
+@router.get("/verify/{id}/image/{filename}")
+async def get_tampering_overlay(id: str, filename: str):
+    # 1. id: sólo caracteres alfanuméricos, guion y guion-bajo
+    safe_id = Path(id).name
+    if not _SAFE_ID.fullmatch(safe_id):
+        raise HTTPException(status_code=400, detail="invalid id")
+
+    # 2. filename: basename puro y sólo overlays
+    safe_filename = Path(filename).name
+    if safe_filename != filename or not safe_filename.endswith("_overlay.png"):
+        raise HTTPException(status_code=400, detail="invalid filename")
+
+    # 3. Resolver y verificar que la ruta quede DENTRO del directorio permitido
+    target = (_TAMPERING_OUTPUT_DIR / safe_id / safe_filename).resolve()
+    try:
+        target.relative_to(_TAMPERING_OUTPUT_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid path")
+
+    # 4. Verificar existencia
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="image not found")
+
+    return FileResponse(target, media_type="image/png")

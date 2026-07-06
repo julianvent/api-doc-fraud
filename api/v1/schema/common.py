@@ -51,6 +51,7 @@ class TamperingPageSchema(BaseModel):
     doctamper_score: Optional[float] = None
     trufor_score: Optional[float] = None
     face_trufor_score: Optional[float] = None
+    overlay_filename: Optional[str] = None
 
 
 class TamperingModuleSchema(BaseModel):
