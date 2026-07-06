@@ -4,7 +4,8 @@ import re
 from service.logging_config import get_logger
 from .backends import VisionBackend
 from .models import PipelineOutput
-from .normalizer import normalize_fields
+from .mrz import mrz_to_dict as _mrz_to_dict
+from .normalizer import normalize_date, normalize_fields
 from .templates import build_fields_guide, iter_template_fields
 from .validation import apply_rules
 
@@ -118,20 +119,10 @@ def _parse_response(raw: str) -> dict:
         raise
 
 
-def _mrz_to_dict(mrz) -> dict:
-    return normalize_fields({
-        "surname"        : mrz.surname,
-        "given_names"    : mrz.given_names,
-        "country"        : mrz.country,
-        "birth_date"  : mrz.birth_date,
-        "expiry_date" : mrz.expiry_date,
-        "document_number": mrz.number,
-        "sex"            : mrz.sex,
-    })
-
-
 def _norm(value) -> str:
-    return str(value).strip().upper().replace(" ", "") if value else ""
+    if not value:
+        return ""
+    return (normalize_date(str(value)) or str(value)).strip().upper().replace(" ", "")
 
 
 _CONFIDENCE_SCORE = {"high": 0.9, "medium": 0.6, "low": 0.3}
@@ -239,7 +230,7 @@ def extract_with_vision(image_path: str,
                         backend: VisionBackend,
                         output: PipelineOutput,
                         spatial_layout: str = "",
-                        template: dict | None = None) -> dict:
+                        template=None) -> dict:
     prompt = _VLM_EXTRACT_PROMPT
 
     if template is not None:

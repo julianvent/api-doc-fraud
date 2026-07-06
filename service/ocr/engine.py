@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 import os
 import json
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -28,6 +29,18 @@ def load_image(path: str | Path, max_side: int = 1_600) -> np.ndarray:
         img = img.resize((new_w, new_h), PILImage.LANCZOS)
         log.debug("resized image: %dx%d → %dx%d", w, h, new_w, new_h)
     return np.array(img)
+
+def _autocontrast_if_grayscale(image: np.ndarray) -> np.ndarray:
+    """Apply autocontrast when the image appears grayscale (R≈G≈B channels).
+    Improves detection in dark or low-contrast regions."""
+    from PIL import ImageOps
+    r, g, b = image[:, :, 0], image[:, :, 1], image[:, :, 2]
+    if np.std(r.astype(int) - g.astype(int)) < 3:
+        pil = PILImage.fromarray(image)
+        pil = ImageOps.autocontrast(pil, cutoff=2)
+        return np.array(pil)
+    return image
+
 
 class OCREngine(ABC):
     """
@@ -79,8 +92,8 @@ class PaddleOCRAdapter(OCREngine):
                     h, w = image.shape[:2]
 
                     bbox_array = np.array(bbox, dtype=np.float32)
-                    bbox_array[:, 0] /= w  # normalizar x
-                    bbox_array[:, 1] /= h  # normalizar y
+                    bbox_array[:, 0] /= w
+                    bbox_array[:, 1] /= h
 
                     lines.append(TextLine(
                         text=text.strip(),
@@ -90,7 +103,6 @@ class PaddleOCRAdapter(OCREngine):
         return lines
 
 
-# Prompt oficial de dots.ocr para parseo estructurado de documentos.
 _DOTS_PARSE_PROMPT = """\
 Please output the layout information from the document image, \
 including each layout element's bbox, its category, and the corresponding \
@@ -105,7 +117,7 @@ preserving the original language and script.
 5. Final Output: The entire output must be a single JSON object.\
 """
 
-# Solo estas categorías contienen texto útil para el agente LLM
+# Only these categories contain text relevant for the LLM agent
 _DOTS_TEXT_CATEGORIES = {
     "Text", "Title", "Section-header", "List-item",
     "Caption", "Footnote", "Table",
@@ -136,7 +148,7 @@ class DotsOCRAdapter(OCREngine):
         import torch
         from transformers import AutoModelForCausalLM, AutoProcessor
 
-        # flash_attention_2 solo en CUDA; sdpa es el fallback estándar para MPS/CPU
+        # flash_attention_2 only on CUDA; sdpa is the standard fallback for MPS/CPU
         attn_impl = "flash_attention_2" if self._device == "cuda" else "sdpa"
         dtype     = torch.bfloat16 if self._device != "cpu" else torch.float32
 
@@ -157,19 +169,6 @@ class DotsOCRAdapter(OCREngine):
         )
         return model, processor
 
-    def _preprocess(self, image: np.ndarray) -> np.ndarray:
-        """
-        Aplica autocontraste si la imagen es en escala de grises
-        (canales R≈G≈B). Mejora la detección en regiones oscuras.
-        """
-        from PIL import ImageOps
-        r, g, b = image[:, :, 0], image[:, :, 1], image[:, :, 2]
-        if np.std(r.astype(int) - g.astype(int)) < 3:
-            pil = PILImage.fromarray(image)
-            pil = ImageOps.autocontrast(pil, cutoff=2)
-            return np.array(pil)
-        return image
-
     def extract(
         self,
         image: "np.ndarray | str | Path",
@@ -181,7 +180,7 @@ class DotsOCRAdapter(OCREngine):
         if isinstance(image, (str, Path)):
             image = load_image(image, max_side)
 
-        image = self._preprocess(image)
+        image = _autocontrast_if_grayscale(image)
         pil_image = PILImage.fromarray(image)
 
         messages = [
@@ -234,10 +233,10 @@ class DotsOCRAdapter(OCREngine):
                 try:
                     data = json.loads(match.group(0))
                 except json.JSONDecodeError:
-                    log.warning("[DotsOCR] output not parseable as JSON")
+                    print("  [DotsOCR] Warning: output could not be parsed as JSON")
                     return self._fallback_plain_text(cleaned)
             else:
-                log.warning("[DotsOCR] no JSON found in output")
+                print("  [DotsOCR] Warning: no JSON found in output")
                 return self._fallback_plain_text(cleaned)
 
         if isinstance(data, list):
@@ -273,7 +272,7 @@ class DotsOCRAdapter(OCREngine):
         return lines
 
     def _fallback_plain_text(self, raw: str) -> list[TextLine]:
-        """Fallback línea a línea si el JSON falla completamente."""
+        """Line-by-line fallback when JSON parsing fails completely."""
         lines = []
         for line in raw.split("\n"):
             line = line.strip()
@@ -301,18 +300,8 @@ class DolphinOCRAdapter(OCREngine):
 
         log.info("[DolphinOCR] model=%s repo=%s", self._model_path, self._repo_path)
 
-        from demo_page import DOLPHIN  # type: ignore  (viene del repo clonado)
+        from demo_page import DOLPHIN  # type: ignore  (from the cloned Dolphin repo)
         self._model = DOLPHIN(self._model_path)
-
-    def _preprocess(self, image: np.ndarray) -> np.ndarray:
-        """Autocontraste para imágenes en escala de grises."""
-        from PIL import ImageOps
-        r, g, b = image[:, :, 0], image[:, :, 1], image[:, :, 2]
-        if np.std(r.astype(int) - g.astype(int)) < 3:
-            pil = PILImage.fromarray(image)
-            pil = ImageOps.autocontrast(pil, cutoff=2)
-            return np.array(pil)
-        return image
 
     def extract(
         self,
@@ -324,27 +313,30 @@ class DolphinOCRAdapter(OCREngine):
         if isinstance(image, (str, Path)):
             image = load_image(image, max_side)
 
-        image = self._preprocess(image)
+        image = _autocontrast_if_grayscale(image)
         pil_image = PILImage.fromarray(image)
 
         save_dir = tempfile.mkdtemp()
-        os.makedirs(os.path.join(save_dir, "output_json"),         exist_ok=True)
-        os.makedirs(os.path.join(save_dir, "markdown", "figures"), exist_ok=True)
+        try:
+            os.makedirs(os.path.join(save_dir, "output_json"),         exist_ok=True)
+            os.makedirs(os.path.join(save_dir, "markdown", "figures"), exist_ok=True)
 
-        process_single_image(
-            image=pil_image,
-            model=self._model,
-            save_dir=save_dir,
-            image_name="doc",
-        )
+            process_single_image(
+                image=pil_image,
+                model=self._model,
+                save_dir=save_dir,
+                image_name="doc",
+            )
 
-        json_path = os.path.join(save_dir, "output_json", "doc.json")
-        if not os.path.exists(json_path):
-            log.warning("[DolphinOCR] no output JSON in %s", save_dir)
-            return []
+            json_path = os.path.join(save_dir, "output_json", "doc.json")
+            if not os.path.exists(json_path):
+                log.warning("[DolphinOCR] no output JSON in %s", save_dir)
+                return []
 
-        with open(json_path, encoding="utf-8") as f:
-            data = json.load(f)
+            with open(json_path, encoding="utf-8") as f:
+                data = json.load(f)
+        finally:
+            shutil.rmtree(save_dir, ignore_errors=True)
 
         return self._parse_output(data)
 

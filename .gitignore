@@ -29,7 +29,9 @@ Dockerfile
 
 DotsOCR/
 
+templates/
 qdrant_storage/
-
 tmp/
 __pycache__
+
+*./service/liveness/dataset

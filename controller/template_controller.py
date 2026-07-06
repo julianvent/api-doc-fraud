@@ -5,15 +5,24 @@
   POST   /v1/templates/generate    → generate_template (no persistence)
   POST   /v1/templates/confirm     → confirm_template (writes JSON + indexes in Qdrant)
 
-Persistence model: each template is a JSON file on disk under
-service/ocr/templates/{document_type}_{country_iso}_{edition}.json
+Persistence model: one folder per template under
+service/template_ocr/templates/{slug}/ containing:
+  template.json      — field specs with spatial regions
+  template.{ext}     — original uploaded image (img_path points here)
+  preprocessed.png   — preprocessed image (reference_image = "preprocessed.png")
 plus a point in Qdrant for vector matching. NO database row.
+
+Transition: confirm also writes to service/ocr/templates/{slug}.json so the
+verify team can keep reading from their current location until they migrate.
+TODO: remove the legacy write once verify migrates.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import shutil
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -47,9 +56,8 @@ from service.template_ocr import heuristics, scan_cache
 
 log = get_logger(__name__)
 
-TEMPLATES_DIR       = Path(OCRConfig().templates_dir)
-TEMPLATE_IMAGES_DIR = Path("template")
-TEMPLATES_JSON_DIR  = Path("templates_json")
+TEMPLATES_DIR     = Path("service/template_ocr/templates")
+_LEGACY_TEMPLATES_DIR = Path(OCRConfig().templates_dir)  # service/ocr/templates/ — kept for verify team
 
 
 # Lazy singleton for DotsOCRAdapter — loading the model is expensive.
@@ -76,6 +84,61 @@ def _normalize_bbox_to_region(bbox: "np.ndarray", w: int, h: int) -> dict:
     }
 
 
+def _poly_to_rect(poly: list) -> dict:
+    """Polygon [[x,y],...] normalised 0–1 → axis-aligned {x1,y1,x2,y2} rect."""
+    xs = [pt[0] for pt in poly]
+    ys = [pt[1] for pt in poly]
+    return {"x1": min(xs), "y1": min(ys), "x2": max(xs), "y2": max(ys)}
+
+
+def _enclosing_rect(polys: list) -> dict:
+    """Enclosing axis-aligned rect over multiple normalised polygons → {x1,y1,x2,y2}."""
+    xs = [pt[0] for poly in polys for pt in poly]
+    ys = [pt[1] for poly in polys for pt in poly]
+    return {"x1": min(xs), "y1": min(ys), "x2": max(xs), "y2": max(ys)}
+
+
+_DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]+")
+_LABEL_SEP_RE  = re.compile(r"^[\s/]+|[\s/]+$")
+
+
+def _normalize_label_text(raw: str) -> str:
+    """Strip Devanagari chars (U+0900–U+097F), collapse internal spaces, trim separators.
+
+    Preserves all Latin, including accented chars (e.g. Spanish 'expedición').
+    If normalization empties the string, returns "" so the caller can fall back.
+    """
+    cleaned = _DEVANAGARI_RE.sub("", raw)
+    cleaned = re.sub(r" {2,}", " ", cleaned)  # collapse runs of spaces left by removal
+    cleaned = _LABEL_SEP_RE.sub("", cleaned)
+    return cleaned
+
+
+def _reading_order_label(elems: list) -> str:
+    """Concatenate element texts in reading order, stripping Devanagari per element.
+
+    Normalizing per-element (not the whole joined string) ensures that a leading
+    separator like '/Latin text' in one element is stripped cleanly without
+    affecting a '/' that is genuine content inside another element (e.g. DD/MM/YYYY).
+    Fallback per element: if normalization empties a single element, its raw text
+    is used instead so no element is silently lost.
+    Rows sorted top→bottom, then x_center left→right within a row.
+    """
+    if not elems:
+        return ""
+    def _top_y(e: dict) -> float:
+        return min(pt[1] for pt in e["bbox"])
+    def _x_center(e: dict) -> float:
+        pts = e["bbox"]
+        return sum(pt[0] for pt in pts) / len(pts)
+    ordered = sorted(elems, key=lambda e: (_top_y(e), _x_center(e)))
+    parts = []
+    for e in ordered:
+        normalized = _normalize_label_text(e["text"])
+        parts.append(normalized if normalized else e["text"])
+    return " ".join(parts)
+
+
 # ─────────────────────────────────────────── filename helpers
 
 
@@ -88,7 +151,7 @@ def _template_slug(document_type: str, country_iso: Optional[str], edition: int)
 
 
 def _template_path(slug: str) -> Path:
-    return TEMPLATES_DIR / f"{slug}.json"
+    return TEMPLATES_DIR / slug / f"{slug}.json"
 
 
 def _parse_slug(slug: str) -> Optional[tuple[str, Optional[str], int]]:
@@ -114,16 +177,22 @@ def list_templates(
         return []
 
     out: list[TemplateSummary] = []
-    for path in sorted(TEMPLATES_DIR.glob("*.json")):
+    for slug_dir in sorted(TEMPLATES_DIR.iterdir()):
+        if not slug_dir.is_dir():
+            continue
+        json_path = slug_dir / f"{slug_dir.name}.json"
+        if not json_path.exists():
+            continue
+        slug = slug_dir.name
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(json_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
         if document_type and data.get("document_type") != document_type:
             continue
         if country and data.get("country") != country:
             continue
-        out.append(_data_to_summary(path.stem, data))
+        out.append(_data_to_summary(slug, data))
     return out
 
 
@@ -144,16 +213,9 @@ def get_template(template_id: str) -> TemplateDetail:
 def generate_template(
     image: UploadFile,
     mode: str,
-    expected_fields: Optional[list[dict]] = None,
 ) -> GenerateResponse:
     if mode not in {"auto", "manual", "dots"}:
         raise HTTPException(status_code=422, detail="mode must be 'auto', 'manual', or 'dots'")
-    if mode == "manual" and not expected_fields:
-        raise HTTPException(
-            status_code=422,
-            detail="expected_fields is required when mode='manual'",
-        )
-
     from controller._upload_limits import read_within_limit
 
     image_bytes = read_within_limit(image)
@@ -244,10 +306,43 @@ def generate_template(
             ocr_elements       = ocr_elements,
         )
 
-    # ── auto / manual mode: existing heuristic-based suggestion flow.
+    # ── auto / manual mode (PaddleOCR). manual returns neutral detected
+    # elements with no suggestions; auto adds heuristic suggestions on top.
     config = OCRConfig()
     engine = _get_engine(config)
     lines  = engine.extract(np_img)
+
+    # Step 2: persist element list so confirm can resolve the same IDs.
+    from service.template_ocr.elements import textlines_to_elements
+    elements = textlines_to_elements(lines)
+    scan_cache.save_elements(generate_id, [e.to_dict() for e in elements])
+
+    # ── manual mode: neutral DetectedElements, no suggestions, no pairing.
+    if mode == "manual":
+        preclass = preclassify(np_img, lines)
+        scan_cache.save_preprocessed_image(generate_id, np_img)
+        ocr_lines = [
+            OCRLine(
+                id         = e.id,
+                text       = e.text,
+                bbox       = e.bbox.tolist(),
+                confidence = float(e.confidence),
+            )
+            for e in elements
+        ]
+        return GenerateResponse(
+            generate_id        = generate_id,
+            expires_at         = expires_at,
+            image_dims         = (int(width), int(h)),
+            preclass           = PreclassPayload(
+                doc_family  = preclass.doc_family,
+                country_iso = preclass.country_iso,
+                mrz_type    = preclass.mrz_type,
+                confidence  = preclass.confidence,
+            ),
+            qr_config          = _detect_qr(np_img),
+            ocr_lines          = ocr_lines,
+        )
 
     preclass = preclassify(np_img, lines)
 
@@ -256,16 +351,13 @@ def generate_template(
     mrz_fields = _mrz_to_dict(mrz_result) if mrz_result else None
 
     suggestions = []
-    if mode == "auto":
-        suggestions.extend(heuristics.suggest_from_mrz(mrz_result))
-        suggestions.extend(heuristics.suggest_from_regex(lines))
-    else:
-        suggestions.extend(heuristics.suggest_from_mrz(mrz_result))
-        suggestions.extend(heuristics.suggest_from_expected(expected_fields or [], lines))
+    # mode is always "auto" here; "manual" already returned above.
+    suggestions.extend(heuristics.suggest_from_mrz(mrz_result))
+    suggestions.extend(heuristics.suggest_from_regex(lines))
 
-    # Best-effort: populate value_line_ids / label_line_id for MRZ-derived
-    # suggestions so the client has the OCR coordinates if it wants to render
-    # an overlay or jump to the location at confirm time.
+    # Best-effort: populate value_element_ids / label_element_id for MRZ-derived
+    # suggestions so the client has the element IDs if it wants to render
+    # an overlay or jump to the location at confirm time. (Step 7: wire real IDs.)
     suggestions = heuristics.enrich_with_ocr_positions(suggestions, lines)
     suggestions = _dedupe_by_key(suggestions)
     anchors     = heuristics.extract_anchors(lines, image_height=np_img.shape[0])
@@ -335,48 +427,80 @@ def confirm_template(req: ConfirmTemplateRequest) -> TemplateDetail:
         img_path = _persist_template_image(cached, slug, ext)
         scan_cache.delete(req.generate_id)
 
-    # Build the fields list, resolving element IDs to spatial regions where
-    # provided. label_element_id / value_element_id are not persisted.
-    _coord_fields = {"label_element_id", "value_element_id"}
+    # Build the fields list. Element ID lists are resolved to spatial regions
+    # then stripped — they are session-scoped cache indices, dead after confirm.
+    # Persisted shape: key, label, type, category, label_region, value_region.
+    # label_region must never be null (verify contract); label-less fields use
+    # the same IDs for label and value → equal regions fall out naturally.
+    _coord_fields = {"label_element_ids", "value_element_ids"}
     fields_payload = []
+    used_keys: set[str] = set()
     for f in req.fields:
         fd = f.model_dump(exclude=_coord_fields)
-        if f.label_element_id is not None:
-            elem = elements_by_id.get(f.label_element_id)
-            if elem:
-                fd["label_region"] = elem["bbox"]
-        if f.value_element_id is not None:
-            elem = elements_by_id.get(f.value_element_id)
-            if elem:
-                fd["value_region"] = elem["bbox"]
+
+        label_elems = [elements_by_id[i] for i in f.label_element_ids if i in elements_by_id]
+        value_elems = [elements_by_id[i] for i in f.value_element_ids if i in elements_by_id]
+
+        if label_elems:
+            fd["label_region"] = _round_rect(_enclosing_rect([e["bbox"] for e in label_elems]))
+            # For fields with a real visible label (IDs differ from value IDs),
+            # build the label string from OCR text in reading order.
+            # For label-less fields (same IDs) keep the user-provided label string.
+            if f.label_element_ids != f.value_element_ids:
+                fd["label"] = _reading_order_label(label_elems)
+
+        if value_elems:
+            fd["value_region"] = _round_rect(_enclosing_rect([e["bbox"] for e in value_elems]))
+
+        # Verify requires label_region non-null. If label elements didn't resolve
+        # (e.g. label-less field or cache miss), mirror value_region.
+        if fd.get("label_region") is None and fd.get("value_region") is not None:
+            fd["label_region"] = fd["value_region"]
+
+        slug_base = _slugify_label(fd.get("label") or "")
+        fd["key"] = _unique_key(slug_base, used_keys)
+        used_keys.add(fd["key"])
+
         fields_payload.append(fd)
 
     data = {
-        "schema_version": 2,
-        "document_type":  req.document_type,
-        "document_name":  req.document_name,
-        "country":        req.country,
-        "country_iso":    req.country_iso,
-        "state":          req.state,
-        "edition":        req.edition,
-        "doc_family":     req.doc_family,
-        "mrz_type":       req.mrz_type,
-        "img_path":       img_path,
-        "fields":         fields_payload,
-        "anchors":        list(req.anchors or []),
-        "fingerprint":    req.fingerprint or {},
-        "field_rules":    req.field_rules or {},
-        "qr_config":      req.qr_config or {},
-        "created_at":     datetime.now(timezone.utc).isoformat(),
+        "schema_version":  2,
+        "document_type":   req.document_type,
+        "document_name":   req.document_name,
+        "country":         req.country,
+        "country_iso":     req.country_iso,
+        "state":           req.state,
+        "edition":         req.edition,
+        "doc_family":      req.doc_family,
+        "mrz_type":        req.mrz_type,
+        "img_path":        img_path,
+        "reference_image": f"{slug}_preprocessed.png",
+        "fields":          fields_payload,
+        "anchors":         list(req.anchors or []),
+        "fingerprint":     req.fingerprint or {},
+        "field_rules":     req.field_rules or {},
+        "qr_config":       req.qr_config or {},
+        "created_at":      datetime.now(timezone.utc).isoformat(),
     }
 
-    TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+    # 1. Authoritative write — new per-template folder.
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Write to the per-template folder (enriched copy with coordinates).
-    _persist_templates_json(slug, ext, data, req.generate_id)
+    # 2. Copy preprocessed image (always .png) into the template folder.
+    if req.generate_id:
+        preprocessed = scan_cache.path_for_preprocessed(req.generate_id)
+        if preprocessed:
+            shutil.copy2(preprocessed, path.parent / f"{slug}_preprocessed.png")
 
-    # Clean up any remaining dots-mode cache files.
+    # 3. Transition: legacy flat copy for the verify team.
+    # TODO: remove when verify team migrates to service/template_ocr/templates/
+    _LEGACY_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+    (_LEGACY_TEMPLATES_DIR / f"{slug}.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    # 4. Clean up any remaining scan-cache files.
     if req.generate_id:
         scan_cache.delete_dots_cache(req.generate_id)
 
@@ -410,11 +534,31 @@ def _persist_templates_json(
 
 
 def _persist_template_image(image_bytes: bytes, slug: str, ext: str) -> str:
-    dest_dir = TEMPLATE_IMAGES_DIR / slug
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"template.{ext}"
+    dest = TEMPLATES_DIR / slug / f"{slug}_sample.{ext}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(image_bytes)
     return dest.as_posix()
+
+
+def _round_rect(rect: dict, n: int = 4) -> dict:
+    return {k: round(v, n) for k, v in rect.items()}
+
+
+def _slugify_label(text: str) -> str:
+    nfkd  = unicodedata.normalize("NFKD", text)
+    base  = "".join(c for c in nfkd if not unicodedata.category(c).startswith("M"))
+    clean = re.sub(r"[^a-z0-9\s]", "", base.lower())
+    slug  = re.sub(r"\s+", "_", clean.strip())
+    return slug[:40] or "field"
+
+
+def _unique_key(base: str, existing: set) -> str:
+    if base not in existing:
+        return base
+    i = 2
+    while f"{base}_{i}" in existing:
+        i += 1
+    return f"{base}_{i}"
 
 
 def _ensure_rgb(image: np.ndarray) -> np.ndarray:
@@ -495,6 +639,7 @@ def _data_to_detail(slug: str, data: dict) -> TemplateDetail:
         doc_family      = data.get("doc_family"),
         mrz_type        = data.get("mrz_type"),
         img_path        = data.get("img_path"),
+        reference_image = data.get("reference_image"),
         fields          = fields,
         anchors         = list(data.get("anchors") or []),
         fingerprint     = data.get("fingerprint") or {},

@@ -88,7 +88,7 @@ def _worst_tampering(reports: List[PageReport]) -> tuple[float, RiskLabel]:
 
 def _avg_ocr_confidence(results: list) -> float:
     confidences = [
-        r.get("result", {}).get("confidence_avg", 0.0)
+        r.get("result", {}).get("ocr_confidence", 0.0)
         for r in results
         if isinstance(r, dict) and r.get("result")
     ]

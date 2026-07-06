@@ -10,31 +10,33 @@ from rapidfuzz import fuzz
 from .models import TextLine
 
 
-TEMPLATES_DIR         = Path(__file__).parent / "templates"
+TEMPLATES_DIR         = Path(__file__).parent.parent / "template_ocr" / "templates"
 BBOX_TOLERANCE        = 0.04
-MATCH_THRESHOLD       = 0.80
+MATCH_THRESHOLD       = 95
 LABEL_FUZZY_THRESHOLD = 70
 
-_REF_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp")
 _MIN_GOOD_MATCHES = 10
 
 
 def _load_ref_image(template: dict) -> np.ndarray | None:
-    """Return the reference image for a template as an RGB numpy array, or None."""
-    explicit = template.get("reference_image")
-    if explicit:
-        path = Path(explicit)
-        if not path.is_absolute():
-            path = TEMPLATES_DIR / explicit
-        if path.exists():
-            return np.array(PILImage.open(path).convert("RGB"))
-        return None
+    """Return the _preprocessed reference image for a template as an RGB numpy array.
 
-    doc_type = template.get("document_type", "")
-    for ext in _REF_EXTENSIONS:
-        path = TEMPLATES_DIR / f"{doc_type}{ext}"
+    Resolution order:
+    1. reference_image field, resolved relative to the template's own directory.
+    2. Any *_preprocessed.png file found in the template directory (auto-detect).
+    """
+    template_dir = template.get("_template_dir")
+
+    explicit = template.get("reference_image")
+    if explicit and template_dir:
+        path = Path(template_dir) / explicit
         if path.exists():
             return np.array(PILImage.open(path).convert("RGB"))
+
+    if template_dir:
+        for candidate in sorted(Path(template_dir).glob("*_preprocessed.png")):
+            return np.array(PILImage.open(candidate).convert("RGB"))
+
     return None
 
 
@@ -90,49 +92,67 @@ class MatchResult:
     unmatched_fields : list[str]
 
 
-def load_template(document_type: str) -> dict | None:
-    candidates = sorted(TEMPLATES_DIR.glob(f"{document_type}*.json"))
-    for path in candidates:
-        if path.stem == document_type:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-    if candidates:
-        with open(candidates[0], "r", encoding="utf-8") as f:
-            return json.load(f)
-    return None
-
-
-def _template_year(data: dict, path: Path) -> int | None:
-    """Extract template year: first from the 'year' JSON field, then from the filename."""
-    if "year" in data:
-        try:
-            return int(data["year"])
-        except (ValueError, TypeError):
-            pass
+def _template_year(data: dict) -> int | None:
+    """Extract the template edition year from JSON fields or directory name."""
+    for key in ("edition", "year"):
+        if key in data:
+            try:
+                return int(data[key])
+            except (ValueError, TypeError):
+                pass
     import re
-    m = re.search(r'_(\d{4})$', path.stem)
+    template_dir = data.get("_template_dir", "")
+    m = re.search(r'_(\d{4})(?:[_/\\]|$)', template_dir)
     return int(m.group(1)) if m else None
 
 
+def _load_template_from_dir(subdir: Path) -> dict | None:
+    """Load and enrich a template JSON from its subdirectory.
+    Injects '_template_dir' so image resolution works relative to the folder."""
+    json_files = list(subdir.glob("*.json"))
+    if not json_files:
+        return None
+    try:
+        with open(json_files[0], "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["_template_dir"] = str(subdir)
+        return data
+    except Exception:
+        return None
+
+
+def load_template(document_type: str) -> dict | None:
+    """Return the most recent template for the given document_type, or None."""
+    templates = load_templates(document_type)
+    return templates[0] if templates else None
+
+
 def load_templates(document_type: str, issue_year: int | None = None) -> list[dict]:
-    """Load templates of the given type. If issue_year is provided, returns only
-    templates with year <= issue_year, sorted most recent first.
-    Without issue_year, returns all templates sorted most recent first."""
-    candidates = sorted(TEMPLATES_DIR.glob(f"{document_type}*.json"))
+    """Load all templates for document_type from TEMPLATES_DIR subdirectories.
+    Each template lives in its own folder: TEMPLATES_DIR/{type}_{country}_{year}/.
+    If issue_year is given, returns only editions <= issue_year, most recent first.
+    Without issue_year, returns all editions most recent first."""
     with_year: list[tuple[int | None, dict]] = []
-    for path in candidates:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            year = _template_year(data, path)
-            with_year.append((year, data))
-        except Exception:
+
+    if not TEMPLATES_DIR.exists():
+        return []
+
+    for subdir in TEMPLATES_DIR.iterdir():
+        if not subdir.is_dir():
             continue
+        data = _load_template_from_dir(subdir)
+        if data is None:
+            continue
+        if data.get("document_type") != document_type:
+            continue
+        with_year.append((_template_year(data), data))
 
     if issue_year is not None:
         eligible = [(y, t) for y, t in with_year if y is None or y <= issue_year]
-        print(f"[TMPL] issue_year={issue_year} → eligible templates: "
-              f"{[(y, t.get('document_name', '?')) for y, t in eligible]}")
+        print(
+            f"[TMPL] issue_year={issue_year} → eligible: "
+            f"{[(y, t.get('document_name', '?')) for y, t in eligible]}"
+        )
         if eligible:
             eligible.sort(key=lambda x: x[0] or 0, reverse=True)
             return [t for _, t in eligible]

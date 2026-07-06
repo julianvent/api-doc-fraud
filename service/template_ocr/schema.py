@@ -4,11 +4,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class FieldSpec(BaseModel):
-    key      : str
-    label    : str
-    type     : str           = "text"
-    category : Optional[str] = None
-    required : bool          = False
+    key          : str
+    label        : str
+    type         : str            = "text"
+    category     : Optional[str]  = None
+    required     : bool           = False
+    # Spatial regions (normalised 0.0–1.0). Populated at confirm; absent in
+    # auto templates and old v2 templates (load as None — backward compat).
+    label_region : Optional[dict] = None  # {x1, y1, x2, y2}
+    value_region : Optional[dict] = None  # {x1, y1, x2, y2}
 
 
 class Fingerprint(BaseModel):
@@ -42,6 +46,7 @@ class Template(BaseModel):
     year_start        : Optional[int]          = None
     year_end          : Optional[int]          = None
     img_path          : Optional[str]          = None
+    reference_image   : Optional[str]          = None
     anchors           : list[str]              = Field(default_factory=list)
     fingerprint       : Optional[Fingerprint]  = None
     fields            : list[FieldSpec]        = Field(default_factory=list)

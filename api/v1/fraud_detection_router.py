@@ -1,25 +1,25 @@
 import asyncio
 import json as _json
+from datetime import date
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
-from api.v1.schema.document_template import TemplateDetail, TemplateSummary
+from api.v1.schema.document_template import BaseDocumentTemplateResponse, TemplateDetail, TemplateSummary
 from api.v1.schema.template_confirm import ConfirmTemplateRequest
 from api.v1.schema.template_generate import GenerateResponse
-from api.v1.schema.verify import BaseVerifyRequest, BaseVerifyResponse
+from api.v1.schema.verify import BaseVerifyRequest, BaseVerifyResponse, Identity
 from controller import fraud_detection_controller as fraud_controller
 from controller import template_controller
+from service.template_ocr import scan_cache as _scan_cache
 
 
 router = APIRouter(prefix="/v1")
 
 
-async def _dots_sse_stream(
-    image: UploadFile,
-    expected_fields: Optional[list],
-) -> None:
+async def _sse_stream(image: UploadFile, mode: str) -> None:
+    """SSE wrapper for generate modes that may take several seconds (dots, manual)."""
     # Send headers + first bytes immediately so every proxy/browser timer resets.
     yield ": keepalive\n\n"
 
@@ -27,8 +27,7 @@ async def _dots_sse_stream(
         asyncio.to_thread(
             template_controller.generate_template,
             image=image,
-            mode="dots",
-            expected_fields=expected_fields,
+            mode=mode,
         )
     )
 
@@ -59,10 +58,38 @@ async def health():
 async def verify(
     request: Annotated[BaseVerifyRequest, Form(media_type="multipart/form-data")],
 ):
+    identity = Identity(
+        full_name=request.full_name,
+        date_of_birth=request.date_of_birth,
+        gender=request.gender,
+    )
+    
     return fraud_controller.verify(
         files=request.document_images,
         id=request.id,
         document_type=request.document_type,
+        identity=identity
+    )
+
+
+@router.post("/template", response_model=BaseDocumentTemplateResponse)
+async def upload_template(
+    img: Annotated[UploadFile, File(description="The template image")],
+    document_type: Annotated[str, Form()],
+    document_name: Annotated[str, Form()],
+    country: Annotated[
+        str, Form(max_length=5, description="Country code, e.g. MEX, USA, UK")
+    ],
+    edition: Annotated[date, Form()],
+    state: Annotated[str | None, Form()] = None,
+):
+    template = fraud_controller.upload_template(
+        img=img,
+        document_type=document_type,
+        country=country,
+        state=state,
+        edition=edition,
+        document_name=document_name,
     )
 
 
@@ -86,23 +113,10 @@ async def get_template(template_id: str):
 async def generate_template(
     image: Annotated[UploadFile, File(description="Sample document image")],
     mode: Annotated[str, Form(description="auto | manual | dots")],
-    expected_fields: Annotated[
-        Optional[str],
-        Form(description='JSON array of {key,label,type} — required when mode=manual'),
-    ] = None,
 ):
-    parsed_expected = None
-    if expected_fields:
-        try:
-            parsed_expected = _json.loads(expected_fields)
-            if not isinstance(parsed_expected, list):
-                raise ValueError("expected_fields must be a JSON array")
-        except (ValueError, _json.JSONDecodeError) as e:
-            raise HTTPException(status_code=422, detail=f"invalid expected_fields: {e}")
-
-    if mode == "dots":
+    if mode in ("dots", "manual"):
         return StreamingResponse(
-            _dots_sse_stream(image=image, expected_fields=parsed_expected),
+            _sse_stream(image=image, mode=mode),
             media_type="text/event-stream",
         )
 
@@ -110,7 +124,6 @@ async def generate_template(
         template_controller.generate_template,
         image=image,
         mode=mode,
-        expected_fields=parsed_expected,
     )
 
 
@@ -121,3 +134,22 @@ async def generate_template(
 )
 async def confirm_template(req: ConfirmTemplateRequest):
     return template_controller.confirm_template(req)
+
+
+@router.get("/templates/session/{generate_id}/image")
+async def get_session_image(generate_id: str):
+    """Serve the preprocessed image for an active generate session.
+
+    Available from the moment generate returns until confirm is called
+    (confirm deletes the scan-cache entry). Returns 404 for expired,
+    already-confirmed, or mode=auto sessions (auto does not save a
+    preprocessed image).
+    """
+    path = _scan_cache.path_for_preprocessed(generate_id)
+    if path is None:
+        raise HTTPException(
+            status_code=404,
+            detail="no preprocessed image for this generate_id "
+                   "(expired, already confirmed, or mode=auto)",
+        )
+    return FileResponse(path, media_type="image/png")
