@@ -170,9 +170,8 @@ def _compare_fields_vs_mrz(fields: dict, output: PipelineOutput) -> tuple[list[d
                 "field"      : key,
                 "description": f"value '{field_value}' contradicts MRZ '{mrz_value}'",
             })
-            flag = f"{key} mrz_mismatch"
-            if flag not in flags:
-                flags.append(flag)
+            if "mrz_mismatch" not in flags:
+                flags.append("mrz_mismatch")
             log.info("mrz-cmp %r MISMATCH: layout=%r mrz=%r", key, field_value, mrz_value)
         else:
             log.debug("mrz-cmp %r match", key)
@@ -252,6 +251,12 @@ Be exhaustive: corners, headers, footers, side columns, multi-line addresses, an
 Do not invent fields with no clear label, but do NOT skip a field just because it seems minor or uncommon. The goal is a complete map of every label-value pair on the document."""
 
     if spatial_layout:
+        # Reserve ~2200 tokens for the output; rough estimate: 1 token ≈ 4 chars.
+        # num_ctx=16384 → ~14000 chars for input. Truncate layout if prompt would overflow.
+        _LAYOUT_CHAR_BUDGET = 14000 - len(prompt)
+        if len(spatial_layout) > _LAYOUT_CHAR_BUDGET:
+            spatial_layout = spatial_layout[:_LAYOUT_CHAR_BUDGET]
+            log.warning("spatial layout truncated to fit VLM context window")
         prompt = f"""{prompt}
 
 ## OCR text reference (cross-check, do not blindly copy)

@@ -62,7 +62,10 @@ _LOW_OCR_CONF = 0.50  # below this, OCR quality is insufficient
 _OCR_FLAG_PENALTY: dict[str, float] = {
     "mrz_mismatch"          : 0.55,  # visible fields ≠ MRZ → very strong fraud signal
     "layout_mismatch"       : 0.35,  # document doesn't match registered template
+    "suspicious_data"       : 0.30,  # VLM detected cross-field data contradiction
     "anchor_mismatch"       : 0.20,  # expected institutional text absent
+    "data_inconsistency"    : 0.20,  # at least one cross-field inconsistency (VLM)
+    "identity_mismatch"     : 0.20,  # identity packet values disagree with document
     "image_region_mismatch" : 0.15,  # no face where photo should be
     "mrz_checksum_failed"   : 0.10,  # MRZ integrity damaged
 }
@@ -132,6 +135,59 @@ def _unwrap_ocr(r: object) -> dict:
     return inner if isinstance(inner, dict) else r
 
 
+def _ocr_page_flags(result: dict) -> set[str]:
+    """All semantic flags for a single unwrapped OCR page result.
+
+    Extends the explicit flags list with derived flags from structured
+    mismatch lists and VLM verdict so every signal surfaces in `flags`.
+    """
+    flags: set[str] = set(result.get("flags") or [])
+
+    # Identity packet vs document disagreement
+    if result.get("identity_mismatches"):
+        flags.add("identity_mismatch")
+
+    # Cross-field data inconsistencies detected by the VLM agent
+    if result.get("inconsistencies"):
+        flags.add("data_inconsistency")
+        # VLM verdict "suspicious" is co-generated with inconsistencies but
+        # also stands alone (e.g. future issue date detected visually).
+    if result.get("verdict") == "suspicious":
+        flags.add("suspicious_data")
+
+    return flags
+
+
+def ocr_page_risk(raw: object) -> float:
+    """[0, 1] risk score for a single OCR page result (handles both wrapped
+    and bare dict shapes). Used by the policy engine and the report builder."""
+    result = _unwrap_ocr(raw)
+    if not result or "error" in result:
+        return 0.0
+
+    flags = _ocr_page_flags(result)
+
+    # Base: complement of layout-match quality (low match → high risk).
+    tmc  = result.get("template_match_confidence")
+    risk = (1.0 - tmc) * 0.30 if tmc is not None else 0.0
+
+    # Additive penalty per flag
+    for flag, penalty in _OCR_FLAG_PENALTY.items():
+        if flag in flags:
+            risk += penalty
+
+    # Each additional identity mismatch compounds risk
+    id_mm = result.get("identity_mismatches") or []
+    risk += min(len(id_mm) * 0.20, 0.40)
+
+    # Low OCR confidence degrades reliability
+    ocr_conf = result.get("ocr_confidence", 1.0)
+    if ocr_conf < _LOW_OCR_CONF:
+        risk += 0.10
+
+    return round(min(risk, 1.0), 3)
+
+
 def _ocr_risk_and_flags(ocr_results: list) -> tuple[float, set[str]]:
     """Compute a [0, 1] OCR risk sub-score and collect all OCR flags.
 
@@ -148,30 +204,8 @@ def _ocr_risk_and_flags(ocr_results: list) -> tuple[float, set[str]]:
         result = _unwrap_ocr(raw)
         if not result or "error" in result:
             continue
-
-        flags = set(result.get("flags") or [])
-        all_flags |= flags
-
-        # Base: complement of layout-match quality (low match → high risk).
-        tmc  = result.get("template_match_confidence")
-        risk = (1.0 - tmc) * 0.30 if tmc is not None else 0.0
-
-        # Additive penalties per flag
-        for flag, penalty in _OCR_FLAG_PENALTY.items():
-            if flag in flags:
-                risk += penalty
-
-        # Each identity field mismatch adds up (the hard rule also fires on
-        # any mismatch, but the score still reflects severity).
-        id_mm = result.get("identity_mismatches") or []
-        risk += min(len(id_mm) * 0.20, 0.40)
-
-        # Low OCR confidence degrades reliability
-        ocr_conf = result.get("ocr_confidence", 1.0)
-        if ocr_conf < _LOW_OCR_CONF:
-            risk += 0.10
-
-        worst_risk = max(worst_risk, min(risk, 1.0))
+        all_flags |= _ocr_page_flags(result)
+        worst_risk = max(worst_risk, ocr_page_risk(raw))
 
     return round(worst_risk, 3), all_flags
 

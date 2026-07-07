@@ -84,6 +84,7 @@ class OCRPageSchema(BaseModel):
     document_type: Optional[str] = None
     ocr_confidence: float = 0.0
     template_match_confidence: Optional[float] = None
+    risk_score: float = 0.0
     fields: Optional[dict] = None
     extras: Optional[dict] = None
     flags: Optional[List[str]] = None
@@ -92,6 +93,7 @@ class OCRPageSchema(BaseModel):
 class OCRModuleSchema(BaseModel):
     engine: str
     pages: List[OCRPageSchema]
+    risk_score: float = 0.0
     consistency_verification: ConsistencyVerification
 
 

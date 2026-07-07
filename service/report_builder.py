@@ -22,7 +22,7 @@ from api.v1.schema.common import (
 )
 from api.v1.schema.verify import BaseVerifyResponse
 from service.metadata.analyzer import MetadataReport
-from service.policy import RiskAggregate
+from service.policy import RiskAggregate, ocr_page_risk
 from service.preprocessor.app.models import ProcessedPage
 from service.tampering.detector import PageReport, RiskLabel
 
@@ -163,9 +163,9 @@ def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
         fields = r.get("fields") or nested.get("fields")
         extras = r.get("extras") or nested.get("extras")
         template_match_confidence = r.get("template_match_confidence")
-        flags = r.get("flags")
-        
-        
+        flags = r.get("flags") or nested.get("flags")
+        page_risk = ocr_page_risk(r)
+
         if r.get("identity_mismatches"):
             identity_mismatches.extend(r.get("identity_mismatches"))
         if r.get("mrz_mismatches"):
@@ -181,18 +181,22 @@ def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
                 page_number=i + 1,
                 document_type=document_type,
                 ocr_confidence=ocr_confidence,
+                template_match_confidence=template_match_confidence,
+                risk_score=page_risk,
                 fields=fields,
                 extras=extras,
-                template_match_confidence=template_match_confidence,
                 flags=flags,
             )
         )
-        
+
+    module_risk = round(max((p.risk_score for p in pages), default=0.0), 3)
+
     return OCRModuleSchema(
         engine=engine_name,
         pages=pages,
+        risk_score=module_risk,
         consistency_verification=ConsistencyVerification(
-            consistency= not (identity_mismatches or mrz_mismatches),
+            consistency=not (identity_mismatches or mrz_mismatches),
             identity_inconsistencies=identity_mismatches,
             mrz_inconsistencies=mrz_mismatches,
         ),

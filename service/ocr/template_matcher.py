@@ -248,6 +248,23 @@ def _cy(line: TextLine) -> float:
     return (min(ys) + max(ys)) / 2
 
 
+_ROW_GROUP_THRESHOLD = 0.03
+
+
+def _first_row(lines: list[TextLine]) -> list[TextLine]:
+    """Return only lines on the topmost row of a region.
+
+    Groups by y-center: keeps any line whose center is within
+    _ROW_GROUP_THRESHOLD of the topmost line. This prevents an
+    adjacent label or caption below the value from leaking into
+    the extracted text.
+    """
+    if not lines:
+        return lines
+    sorted_lines = sorted(lines, key=_cy)
+    base_y = _cy(sorted_lines[0])
+    return [l for l in sorted_lines if _cy(l) - base_y <= _ROW_GROUP_THRESHOLD]
+
 
 def _find_label_line(lines: list[TextLine], label_latin: str) -> TextLine | None:
     if not label_latin:
@@ -315,13 +332,12 @@ def match(lines: list[TextLine], template: dict) -> MatchResult:
                 # No truncation — the value spans as many rows as the region contains.
                 pass
             else:
-                # Exclude only the matched label line for THIS field.
-                # A global exclude-list would incorrectly remove lines that are
-                # valid values for neighbouring fields with overlapping regions.
+                # Exclude only the matched label line for this field.
                 if label_line is not None:
                     value_lines = [l for l in value_lines if l is not label_line]
-                # All remaining lines in the bbox are part of the value —
-                # _row_order in ocr.py will sort and join them.
+                # Keep only the topmost row — prevents adjacent labels or captions
+                # below the value region from leaking into the extracted text.
+                value_lines = _first_row(value_lines)
 
             field_lines[key] = value_lines
         else:

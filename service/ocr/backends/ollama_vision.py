@@ -41,7 +41,7 @@ class OllamaVisionBackend(VisionBackend):
                     "options": {
                         "temperature": 0.0,
                         "num_predict": max_tokens,
-                        "num_ctx"    : 5000,
+                        "num_ctx"    : 16384,
                     },
                 },
                 timeout=self._timeout,

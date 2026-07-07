@@ -48,7 +48,7 @@ _config: Config | None = None
 _config_lock = threading.Lock()
 
 # Fuzzy threshold for MRZ field comparison — allows single-char OCR noise.
-_MRZ_FUZZY_THRESHOLD = 85
+_MRZ_FUZZY_THRESHOLD = 100
 
 _ROW_GROUP_THRESHOLD = 0.03
 
