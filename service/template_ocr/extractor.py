@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import re
 import requests
 from pathlib import Path
@@ -10,7 +11,10 @@ from .model import TemplateConfig
 from .prompt import _build_prompt
 
 
-def _load_image(path: str | Path, max_side: int = 1_600) -> PILImage.Image:
+_DEFAULT_MAX_SIDE = int(os.getenv("TEMPLATE_IMAGE_MAX_SIDE", "1024"))
+
+
+def _load_image(path: str | Path, max_side: int = _DEFAULT_MAX_SIDE) -> PILImage.Image:
     img = PILImage.open(path).convert("RGB")
     w, h = img.size
     longest = max(w, h)
@@ -50,6 +54,7 @@ def _call_llm(
     ollama_url: str,
     ollama_model: str,
     document_type: str,
+    timeout: int = 600,
 ) -> list[dict]:
     prompt      = _build_prompt(document_type)
     encoded_img = _encode_image(img_path)
@@ -62,9 +67,9 @@ def _call_llm(
                 "prompt":      prompt,
                 "images":      [encoded_img],
                 "stream":      False,
-                "temperature": 0,
+                "temperature": 0.0,
             },
-            timeout=180,
+            timeout=timeout,
         )
         response.raise_for_status()
         raw = response.json().get("response", "")
@@ -90,15 +95,17 @@ def _call_llm(
         return {}
     # Devolver las categorias tal como vienen del modelo
     return {
-        "personal": data.get("personal", []),
-        "document": data.get("document", []),
+        "personal":    data.get("personal", []),
+        "document":    data.get("document", []),
+        "fingerprint": data.get("fingerprint") or {},
+        "validators":  data.get("validators") or {},
     }
 
 
 # Keys que deben coincidir exactamente con los campos para validar el MRZ
 _MRZ_KEYS = {
     "surname", "given_names", "givennames", "givenname",
-    "birth_date", "birthdate", "dateofbirth",
+    "birth_date", "birthdate", "dateofbirth", "date_of_birth",
     "expiry_date", "expirydate", "dateofexpiry",
     "document_number", "documentnumber", "docnumber",
     "sex", "country", "nationality",
@@ -110,6 +117,7 @@ _MRZ_KEY_MAP = {
     "givenname":      "given_names",
     "birthdate":      "birth_date",
     "dateofbirth":    "birth_date",
+    "date_of_birth":    "birth_date",
     "expirydate":     "expiry_date",
     "dateofexpiry":   "expiry_date",
     "documentnumber": "document_number",
@@ -152,17 +160,46 @@ def extract_template(
     if config is None:
         config = TemplateConfig()
 
-    print(f"  [TemplateOCR] Enviando imagen a {config.ollama_model}...")
-    raw = _call_llm(img_path, config.ollama_url, config.ollama_model, document_type)
+    print(f"  [TemplateOCR] Enviando imagen a {config.ollama_model} (timeout={config.ollama_timeout}s)...")
+    raw = _call_llm(img_path, config.ollama_url, config.ollama_model, document_type, timeout=config.ollama_timeout)
 
     if not raw:
         print("  [TemplateOCR] Warning: el modelo no devolvió campos")
-        return {"personal": [], "document": [], "n_fields": 0}
+        return {
+            "personal":    [],
+            "document":    [],
+            "fingerprint": {},
+            "validators":  {},
+            "n_fields":    0,
+        }
 
     used_keys: set = set()
     personal  = _normalize_category(raw.get("personal", []), "personal", used_keys)
     document  = _normalize_category(raw.get("document", []), "document", used_keys)
 
+    fingerprint_raw = raw.get("fingerprint") or {}
+    fingerprint = {
+        "layout_desc": str(fingerprint_raw.get("layout_desc") or "").strip() or None,
+        "anchors":     [str(a).strip() for a in (fingerprint_raw.get("anchors") or []) if str(a).strip()],
+    }
+
+    validators_raw = raw.get("validators") or {}
+    all_keys       = {f["key"] for f in personal} | {f["key"] for f in document}
+    validators     = (
+        {k: v for k, v in validators_raw.items() if k in all_keys and isinstance(v, dict)}
+        if isinstance(validators_raw, dict) else {}
+    )
+
     n = len(personal) + len(document)
-    print(f"  [TemplateOCR] {n} campos identificados ({len(personal)} personal, {len(document)} document)")
-    return {"personal": personal, "document": document, "n_fields": n}
+    print(
+        f"  [TemplateOCR] {n} campos identificados ({len(personal)} personal, "
+        f"{len(document)} document), fingerprint.anchors={len(fingerprint['anchors'])}, "
+        f"validators={len(validators)}"
+    )
+    return {
+        "personal":    personal,
+        "document":    document,
+        "fingerprint": fingerprint,
+        "validators":  validators,
+        "n_fields":    n,
+    }

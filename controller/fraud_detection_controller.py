@@ -11,39 +11,55 @@ from __future__ import annotations
 import shutil
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List
 
 from fastapi import UploadFile
 
-from api.v1.schema.verify import BaseVerifyResponse
+from api.v1.schema.verify import BaseVerifyResponse, Identity
 from service import policy, report_builder
+from service.logging_config import get_logger
 from service.metadata import metadata
 from service.ocr import ocr
 from service.preprocessor import preprocessor
 from service.preprocessor.app.io.writer import save_image
 from service.tampering import tampering
-from service.template_ocr import template_ocr
+from model.document_template import DocumentTemplate  # noqa: F401  (kept for legacy callers)
 
-from model.document_template import DocumentTemplate
+
+log = get_logger(__name__)
 
 FILES_PATH = "files"
 TEMPLATE_PATH = "template"
 
 
 def upload_file(file: UploadFile, path: str, id: str) -> Path:
-    """Save uploaded file under files/<id>/. Returns the saved path."""
-    dest_dir = Path(f"{path}/{id}")
+    """Save uploaded file under files/<id>/. Returns the saved path.
+
+    The client-supplied filename is sanitized to its basename to prevent path
+    traversal (e.g. '../../etc/passwd.jpg' → 'passwd.jpg'). The upload size is
+    bounded by ensure_upload_size before any bytes are copied."""
+    from controller._upload_limits import ensure_upload_size
+
+    ensure_upload_size(file)
+    safe_id   = Path(id).name or "anon"
+    safe_name = Path(file.filename or "upload.bin").name or "upload.bin"
+    dest_dir  = Path(path) / safe_id
     dest_dir.mkdir(parents=True, exist_ok=True)
-    path = dest_dir / file.filename
-    with path.open(mode="wb") as buffer:
+    dest = dest_dir / safe_name
+    with dest.open(mode="wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-    print(f" > File saved: {path}")
-    return path
+    log.debug("file saved: %s", dest)
+    return dest
 
 
-def verify(files: list[UploadFile], id: str, document_type: str | None = None) -> BaseVerifyResponse:
+def verify(
+    files: list[UploadFile],
+    id: str,
+    identity: Identity,
+    document_type: str | None = None,
+) -> BaseVerifyResponse:
     """Run the full pipeline on the uploaded files of a single document."""
     request_id = str(uuid.uuid4())
     started_at = time.perf_counter()
@@ -70,7 +86,11 @@ def verify(files: list[UploadFile], id: str, document_type: str | None = None) -
         save_image(page, Path(FILES_PATH) / id / "processed")
         for page in processed_pages
     ]
-    ocr_results = ocr.process(ocr_paths, document_type=document_type)
+    ocr_results = ocr.process(
+        ocr_paths,
+        document_type=document_type,
+        identity=identity,
+    )
     timings["ocr"] = int((time.perf_counter() - t0) * 1000)
 
     risk = policy.compute(
@@ -98,13 +118,20 @@ def verify(files: list[UploadFile], id: str, document_type: str | None = None) -
 
 
 def upload_template(
-    img: UploadFile, document_name: str, document_type: str, country: str | None = None
+    img: UploadFile,
+    document_name: str,
+    document_type: str,
+    country: str,
+    edition: date,
+    state: str | None = None,
 ) -> DocumentTemplate:
     path = upload_file(file=img, path=TEMPLATE_PATH, id="test")
 
     new_template = template_ocr.upload(
         document_type=document_type,
         country=country,
+        state=state,
+        edition=edition,
         document_name=document_name,
         img_path=path.as_posix(),
     )

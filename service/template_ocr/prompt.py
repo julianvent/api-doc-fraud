@@ -28,8 +28,9 @@ KEY NORMALIZATION
 Use these exact standard keys whenever the field matches — regardless of language or wording:
  
   Personal:
-    surname           → family name / apellidos / surname
-    given_names       → given names / nombres / first name
+    surname           → if surname / family name / apellidos appears as a separate field
+    given_names       → if given names / nombres / first name appear as a separate field
+    surname_and_given_names → if both appear combined in a single field label
     birth_date        → date of birth / fecha de nacimiento
     sex               → sex / sexo / gender
     nationality       → nationality / nacionalidad
@@ -84,6 +85,42 @@ ALWAYS IGNORE
 OUTPUT
 ──────────────────────────────────────────────
  
+In addition to the fields, produce two extra blocks:
+
+──────────────────────────────────────────────
+FINGERPRINT
+──────────────────────────────────────────────
+
+"fingerprint.layout_desc" — one or two sentences describing the document layout:
+  document family (passport / visa / ID card / etc.), MRZ presence and approximate
+  position, dominant color, photo position, distinctive structural elements.
+
+"fingerprint.anchors" — 3 to 6 short verbatim strings printed on the document that
+  are STABLE across instances (issuing authority name, document title, country
+  header). Do NOT include personal data, dates, or document numbers.
+
+──────────────────────────────────────────────
+VALIDATORS
+──────────────────────────────────────────────
+
+"validators" — OPTIONAL dict mapping field key to declarative validation rules.
+Only include rules you can infer with HIGH confidence from the document type
+(do NOT invent rules). Allowed shapes:
+  {{"regex": "<pattern>"}}                                   for alphanumeric formats
+  {{"type": "date", "must_be_past": true}}                   for birth_date and similar
+  {{"type": "date", "must_be_future": true}}                 for expiry_date
+  {{"type": "date", "before": "<other_field_key>"}}          for cross-field
+Examples:
+  document_number → {{"regex": "^[A-Z][0-9]{{8}}$"}}
+  birth_date      → {{"type": "date", "must_be_past": true}}
+  expiry_date     → {{"type": "date", "must_be_future": true}}
+
+If you cannot infer any high-confidence rule, return an empty dict for "validators".
+
+──────────────────────────────────────────────
+OUTPUT
+──────────────────────────────────────────────
+
 Return ONLY valid JSON, no explanation, no markdown:
 {{
   "personal": [
@@ -93,10 +130,18 @@ Return ONLY valid JSON, no explanation, no markdown:
   "document": [
     {{"key": "document_number", "label": "Passport No.", "type": "alphanumeric"}},
     {{"key": "expiry_date", "label": "Expiry date", "type": "date"}}
-  ]
+  ],
+  "fingerprint": {{
+    "layout_desc": "Passport-type document, MRZ TD3 bottom, burgundy color, photo top-left.",
+    "anchors": ["ESTADOS UNIDOS MEXICANOS", "PASAPORTE", "SRE"]
+  }},
+  "validators": {{
+    "document_number": {{"regex": "^[A-Z][0-9]{{8}}$"}},
+    "expiry_date":     {{"type": "date", "must_be_future": true}}
+  }}
 }}
- 
-Allowed types: "text", "date", "alphanumeric", "code", "single_letter", "entry_count"
+
+Allowed field types: "text", "date", "alphanumeric", "code", "single_letter", "entry_count"
 """
 
 _DOC_SPECIFIC_PASSPORT = """\

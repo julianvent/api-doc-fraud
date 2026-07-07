@@ -15,11 +15,13 @@ output/
 service/tampering/weights/
 
 service/tampering/output/*
+service/tampering/weights.zip
 !service/tampering/output/.gitkeep
 service/tampering/test_output/
 service/tampering/test_output_eval/
 service/preprocessor/output/*
 !service/preprocessor/output/.gitkeep
+service/preprocessor/weights.zip
 service/ocr/output/*
 !service/ocr/output/.gitkeep
 
@@ -28,3 +30,13 @@ docker-compose.yml
 Dockerfile
 
 DotsOCR/
+
+docs/
+documentation.txt
+
+templates/
+qdrant_storage/
+tmp/
+__pycache__
+
+*./service/liveness/dataset

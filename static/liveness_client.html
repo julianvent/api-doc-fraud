@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Liveness — test client</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #111; color: #eee; font-family: system-ui, sans-serif;
+         display: flex; flex-direction: column; align-items: center; }
+  #stage { position: relative; margin-top: 12px; }
+  /* Mirror the PREVIEW VIDEO ONLY (selfie view). #overlay is a sibling and
+     must NOT be mirrored, so its canvas coords stay un-mirrored and the
+     arrow-side math is direct (canvas-left = screen-left). */
+  video { display: block; background: #000; border-radius: 8px; transform: scaleX(-1); }
+  #overlay { position: absolute; left: 0; top: 0; }
+  #steps { display: flex; gap: 8px; margin: 12px auto 2px; }
+  .step { font-size: 12px; padding: 4px 12px; border-radius: 12px; background: #222;
+          color: #888; border: 1px solid #333; transition: all 120ms; }
+  .step.active { background: #0bd; color: #022; font-weight: 700; border-color: #0bd; }
+  .step.done { background: #103a22; color: #2ec85a; border-color: #2ec85a; }
+  #banner { font-size: 22px; font-weight: 600; min-height: 30px; margin: 10px 8px 4px;
+            text-align: center; }
+  #sub { font-size: 14px; color: #aaa; min-height: 20px; text-align: center; }
+  #bar { width: 320px; height: 10px; background: #333; border-radius: 5px; margin: 8px auto; overflow: hidden; }
+  #barfill { height: 100%; width: 0; background: #0bd; transition: width 80ms linear; }
+  button { margin: 14px; padding: 10px 22px; font-size: 16px; border: 0; border-radius: 6px;
+           background: #0bd; color: #022; font-weight: 700; cursor: pointer; }
+  .accept { color: #2ec85a; } .reject { color: #e84a4a; } .hint { color: #f0a020; }
+</style>
+</head>
+<body>
+  <div id="steps">
+    <span class="step" id="step1">1 · Real-person check</span>
+    <span class="step" id="step2">2 · Liveness challenges</span>
+  </div>
+  <div id="banner">Liveness</div>
+  <div id="sub">Press Start and allow the camera</div>
+  <div id="bar"><div id="barfill"></div></div>
+  <div id="stage">
+    <video id="video" autoplay playsinline muted width="640" height="360"></video>
+    <canvas id="overlay" width="640" height="360"></canvas>
+  </div>
+  <button id="start">Start</button>
+  <canvas id="grab" width="1280" height="720" style="display:none"></canvas>
+
+<script>
+const SEND_W = 1280, SEND_H = 720, SEND_FPS = 15, JPEG_Q = 0.7;
+const video = document.getElementById('video');
+const overlay = document.getElementById('overlay');
+const octx = overlay.getContext('2d');
+const grab = document.getElementById('grab');
+const gctx = grab.getContext('2d');
+const banner = document.getElementById('banner');
+const sub = document.getElementById('sub');
+const barfill = document.getElementById('barfill');
+const steps = [document.getElementById('step1'), document.getElementById('step2')];
+let ws = null, sendTimer = null, oval = null, lastSnap = null, finished = false;
+
+const ARROWS = { turn_left: '←', turn_right: '→' };
+
+// Stage 1 (real-person check) covers preflight + the CENTER_FACE challenge:
+// that is exactly when the server samples passive PAD and evaluates the
+// live-person gate. Motion challenges are stage 2.
+function setStage(n) {  // 1, 2, or 3 (=both done)
+  steps.forEach((el, i) => {
+    const idx = i + 1;
+    el.className = 'step' + (idx === n ? ' active' : (idx < n ? ' done' : ''));
+  });
+}
+
+document.getElementById('start').onclick = start;
+
+async function start() {
+  finished = false; lastSnap = null;
+  banner.textContent = 'Starting camera...'; banner.className = '';
+  setStage(0);
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: 1280, height: 720, facingMode: 'user' }, audio: false });
+  video.srcObject = stream;
+  await video.play();
+
+  // The PREVIEW is mirrored (scaleX(-1) on <video> only) for a natural selfie
+  // view; the SENT frame stays RAW because sendFrame()/drawImage(video) ignores
+  // CSS transforms, so the server's raw-frame yaw convention is preserved.
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/v1/liveness/session`);
+  ws.binaryType = 'arraybuffer';
+  ws.onmessage = onMessage;
+  ws.onclose = () => { if (sendTimer) clearInterval(sendTimer); };
+  ws.onopen = () => {
+    sendTimer = setInterval(sendFrame, 1000 / SEND_FPS);
+    requestAnimationFrame(draw);
+  };
+}
+
+function sendFrame() {
+  if (!ws || ws.readyState !== 1 || finished) return;
+  gctx.drawImage(video, 0, 0, SEND_W, SEND_H);
+  grab.toBlob(b => { if (b && ws.readyState === 1) b.arrayBuffer().then(a => ws.send(a)); },
+              'image/jpeg', JPEG_Q);
+}
+
+function onMessage(ev) {
+  const msg = JSON.parse(ev.data);
+  if (msg.type === 'session_started') { oval = msg.oval; }
+  else if (msg.type === 'snapshot') { lastSnap = msg; renderSnapshot(msg); }
+  else if (msg.type === 'result') { renderResult(msg); }
+  else if (msg.type === 'error') { banner.textContent = msg.message; banner.className = 'reject'; }
+}
+
+function renderSnapshot(s) {
+  const isCenter = s.challenge && s.challenge.type === 'center_face';
+  const realPersonPhase = s.phase === 'preflight' || isCenter;
+  setStage(realPersonPhase ? 1 : 2);
+
+  let text = '', cls = '', subText = '', frac = 0;
+  if (s.occlusion_hint) {
+    text = s.occlusion_hint; cls = 'hint';
+    subText = realPersonPhase ? 'Step 1 of 2 · Real-person check'
+                              : 'Step 2 of 2 · Liveness challenges';
+  } else if (s.phase === 'preflight') {
+    text = "Checking you're a real person…";
+    subText = 'Step 1 of 2 · Real-person check';
+    frac = s.preflight_progress;
+  } else if (s.phase === 'recentering') {
+    text = 'Return to the oval';
+    subText = 'Step 2 of 2 · Liveness challenges';
+  } else if (s.phase === 'challenge_active' && s.challenge) {
+    if (isCenter) {
+      text = s.challenge.prompt;        // "Center your face in the oval"
+      subText = 'Step 1 of 2 · Confirming a real, live person';
+    } else {
+      if (s.challenge_phase === 1) { text = 'Return to center'; cls = 'accept'; }
+      else if (s.wrong_direction) { text = 'Other direction!'; cls = 'hint'; }
+      else { text = s.challenge.prompt; }
+      // index 0 is CENTER_FACE; motion challenges are 1..total-1.
+      const motionNum = s.challenge.index;
+      const motionTotal = s.challenge.total - 1;
+      subText = `Step 2 of 2 · challenge ${motionNum}/${motionTotal}` +
+        (s.time_remaining_s ? ` — ${s.time_remaining_s.toFixed(1)}s` : '');
+    }
+  }
+  banner.textContent = text; banner.className = cls;
+  sub.textContent = subText;
+  barfill.style.width = (s.phase === 'preflight' ? frac * 100 : 0) + '%';
+}
+
+function renderResult(msg) {
+  finished = true;
+  if (sendTimer) clearInterval(sendTimer);
+  const accepted = msg.verdict === 'ACCEPT';
+  banner.textContent = accepted ? 'ACCEPTED' : 'REJECTED';
+  banner.className = accepted ? 'accept' : 'reject';
+  sub.textContent = msg.message;
+  barfill.style.width = '0';
+  if (accepted) setStage(3);   // both stages cleared
+}
+
+function draw() {
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  if (oval) {
+    const cx = oval.cx * overlay.width, cy = oval.cy * overlay.height;
+    const rx = oval.rx * overlay.width, ry = oval.ry * overlay.height;
+    let color = '#888';
+    if (lastSnap) {
+      if (lastSnap.occlusion_hint) color = '#f0a020';
+      else if (lastSnap.in_oval) color = '#2ec85a';
+      else if (lastSnap.phase === 'preflight' || lastSnap.phase === 'recentering') color = '#0bd';
+    }
+    octx.strokeStyle = color; octx.lineWidth = 4;
+    octx.beginPath(); octx.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI); octx.stroke();
+    // Direction arrow for head turns. The preview is mirrored, so screen
+    // direction = the user's body direction: TURN_LEFT -> left arrow on the
+    // LEFT, TURN_RIGHT -> right arrow on the RIGHT. The overlay is NOT
+    // mirrored, so canvas-left is screen-left and the side math is direct.
+    if (lastSnap && lastSnap.challenge && ARROWS[lastSnap.challenge.type] && lastSnap.challenge_phase === 0) {
+      const t = lastSnap.challenge.type;
+      const isLeft = t === 'turn_left';
+      octx.fillStyle = '#0df'; octx.font = '64px sans-serif';
+      octx.textAlign = isLeft ? 'right' : 'left';
+      octx.fillText(ARROWS[t], isLeft ? (cx - rx - 10) : (cx + rx + 10), cy + 20);
+      octx.textAlign = 'left';   // reset to canvas default
+    }
+  }
+  if (!finished) requestAnimationFrame(draw);
+}
+</script>
+</body>
+</html>

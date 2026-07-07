@@ -1,4 +1,5 @@
 """Translate the internal module outputs into the public BaseVerifyResponse."""
+
 from __future__ import annotations
 
 import json
@@ -17,10 +18,11 @@ from api.v1.schema.common import (
     TamperingModuleSchema,
     TamperingPageSchema,
     Verdict,
+    ConsistencyVerification,
 )
 from api.v1.schema.verify import BaseVerifyResponse
 from service.metadata.analyzer import MetadataReport
-from service.policy import RiskAggregate
+from service.policy import RiskAggregate, ocr_page_risk
 from service.preprocessor.app.models import ProcessedPage
 from service.tampering.detector import PageReport, RiskLabel
 
@@ -47,7 +49,7 @@ def build(
 ) -> BaseVerifyResponse:
     return BaseVerifyResponse(
         # Backwards-compatible flat fields
-        tampering_score=risk.score,
+        risk_score=risk.score,
         flags=risk.flags,
         confidence=risk.confidence,
         verdict=Verdict(risk.verdict),
@@ -68,7 +70,7 @@ def build(
 
 
 def _build_metadata(reports: List[MetadataReport]) -> MetadataModuleSchema:
-    files = [
+    pages = [
         MetadataFileReportSchema(
             source=r.source,
             format=r.format,
@@ -88,10 +90,12 @@ def _build_metadata(reports: List[MetadataReport]) -> MetadataModuleSchema:
         for r in reports
     ]
     aggregate = max((r.suspicion_score for r in reports), default=0.0)
-    return MetadataModuleSchema(files=files, aggregate_suspicion=aggregate)
+    return MetadataModuleSchema(pages=pages, aggregate_suspicion=aggregate)
 
 
 def _build_tampering(reports: List[PageReport]) -> TamperingModuleSchema:
+    from pathlib import Path as _Path
+
     pages = [
         TamperingPageSchema(
             source=r.source,
@@ -100,14 +104,25 @@ def _build_tampering(reports: List[PageReport]) -> TamperingModuleSchema:
             reliability=r.reliability.value,
             reasons=[f"[{f.severity.value}] {f.message}" for f in r.findings],
             face_detected=bool(r.face.detected) if r.face else False,
-            doctamper_score=r.doctamper.score_mean if r.doctamper and r.doctamper.ran else None,
+            doctamper_score=(
+                r.doctamper.score_mean if r.doctamper and r.doctamper.ran else None
+            ),
             trufor_score=r.trufor.score if r.trufor and r.trufor.ran else None,
-            face_trufor_score=r.face_trufor.score if r.face_trufor and r.face_trufor.ran else None,
+            face_trufor_score=(
+                r.face_trufor.score if r.face_trufor and r.face_trufor.ran else None
+            ),
+            overlay_filename=(
+                _Path(r.artifacts.doctamper_overlay).name
+                if r.artifacts and r.artifacts.doctamper_overlay
+                else None
+            ),
         )
         for r in reports
     ]
     worst = max(reports, key=lambda r: _RISK_RANK.get(r.risk_label, 0), default=None)
-    worst_risk_label = worst.risk_label.value if worst is not None else RiskLabel.LEGITIMATE.value
+    worst_risk_label = (
+        worst.risk_label.value if worst is not None else RiskLabel.LEGITIMATE.value
+    )
     worst_fraud_score = max((r.fraud_score for r in reports), default=0.0)
     return TamperingModuleSchema(
         pages=pages,
@@ -134,6 +149,8 @@ def _build_preprocessor(pages: List[ProcessedPage]) -> PreprocessorModuleSchema:
 
 def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
     pages = []
+    identity_mismatches = []
+    mrz_mismatches = []
     for i, r in enumerate(results):
         if not isinstance(r, dict):
             pages.append(OCRPageSchema(page_number=i + 1))
@@ -141,25 +158,46 @@ def _build_ocr(results: list, engine_name: str) -> OCRModuleSchema:
 
         nested = r.get("result", {}) if isinstance(r.get("result"), dict) else {}
 
-        document_type  = r.get("document_type")  or nested.get("document_type")
-        verdict        = r.get("verdict")        or nested.get("verdict")
-        confidence_avg = r.get("confidence_avg") or nested.get("confidence_avg", 0.0)
-        fields         = r.get("fields")         or nested.get("fields")
-        extras         = r.get("extras")         or nested.get("extras")
-        match_score    = r.get("match_score")
-        flags          = r.get("flags")
+        document_type = r.get("document_type") or nested.get("document_type")
+        ocr_confidence = r.get("ocr_confidence") or nested.get("ocr_confidence", 0.0)
+        fields = r.get("fields") or nested.get("fields")
+        extras = r.get("extras") or nested.get("extras")
+        template_match_confidence = r.get("template_match_confidence")
+        flags = r.get("flags") or nested.get("flags")
+        page_risk = ocr_page_risk(r)
+
+        if r.get("identity_mismatches"):
+            identity_mismatches.extend(r.get("identity_mismatches"))
+        if r.get("mrz_mismatches"):
+            mrz_mismatches.extend(r.get("mrz_mismatches"))
 
         if fields:
-            print(f"[OCR page {i + 1}] fields:\n{json.dumps(fields, indent=2, ensure_ascii=False)}")
+            print(
+                f"[OCR page {i + 1}] fields:\n{json.dumps(fields, indent=2, ensure_ascii=False)}"
+            )
 
-        pages.append(OCRPageSchema(
-            page_number    = i + 1,
-            document_type  = document_type,
-            verdict        = verdict,
-            confidence_avg = confidence_avg,
-            fields         = fields,
-            extras         = extras,
-            match_score    = match_score,
-            flags          = flags,
-        ))
-    return OCRModuleSchema(engine=engine_name, pages=pages)
+        pages.append(
+            OCRPageSchema(
+                page_number=i + 1,
+                document_type=document_type,
+                ocr_confidence=ocr_confidence,
+                template_match_confidence=template_match_confidence,
+                risk_score=page_risk,
+                fields=fields,
+                extras=extras,
+                flags=flags,
+            )
+        )
+
+    module_risk = round(max((p.risk_score for p in pages), default=0.0), 3)
+
+    return OCRModuleSchema(
+        engine=engine_name,
+        pages=pages,
+        risk_score=module_risk,
+        consistency_verification=ConsistencyVerification(
+            consistency=not (identity_mismatches or mrz_mismatches),
+            identity_inconsistencies=identity_mismatches,
+            mrz_inconsistencies=mrz_mismatches,
+        ),
+    )

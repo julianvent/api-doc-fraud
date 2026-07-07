@@ -1,2 +1,9 @@
 [tool.fastapi]
 entrypoint = "main:app"
+
+[tool.pytest.ini_options]
+# `.` puts api-doc-fraud on the path so `service.liveness.*` imports
+# resolve; the tests dir makes the shared `factories` module importable
+# from each liveness test file.
+pythonpath = [".", "service/liveness/tests"]
+addopts = "-q"

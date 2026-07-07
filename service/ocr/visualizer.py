@@ -124,11 +124,16 @@ def visualize_matplotlib(image_bgr: np.ndarray,
     print(f"Saved: {output_path}")
 
 
+_VIOLET = "#a855f7"
+
+
 def visualize_template_match(image_bgr: np.ndarray,
                               lines: list[TextLine],
                               template: dict,
                               match_result,
-                              output_path: str = "output/template_match.png"):
+                              output_path: str = "output/template_match.png",
+                              anchor_details: list[dict] | None = None,
+                              image_region_details: list[dict] | None = None):
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     fig, ax = plt.subplots(1, 1, figsize=(14, 10))
     ax.imshow(image_rgb)
@@ -136,6 +141,7 @@ def visualize_template_match(image_bgr: np.ndarray,
 
     h, w = image_bgr.shape[:2]
 
+    # All OCR lines (faint grey)
     for line in lines:
         if line.bbox is None or len(line.bbox) == 0:
             continue
@@ -149,17 +155,37 @@ def visualize_template_match(image_bgr: np.ndarray,
             linewidth=0.5, edgecolor="#9ca3af", facecolor="none", alpha=0.4
         ))
 
+    # Image regions from template (violet dashed box + face-detection status)
+    for detail in (image_region_details or []):
+        reg = detail["region"]
+        detected = detail["face_detected"]
+        rx1, ry1 = reg["x1"] * w, reg["y1"] * h
+        rx2, ry2 = reg["x2"] * w, reg["y2"] * h
+        ax.add_patch(patches.Rectangle(
+            (rx1, ry1), rx2 - rx1, ry2 - ry1,
+            linewidth=2.5, edgecolor=_VIOLET, facecolor=_VIOLET + "15",
+            linestyle="--"
+        ))
+        status_txt = "✓ face" if detected else "✗ no face"
+        status_col = GREEN if detected else RED
+        ax.text(
+            rx1 + 3, ry1 + (ry2 - ry1) / 2, status_txt,
+            fontsize=7, color=status_col, va="center", fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.85, ec="none"),
+        )
+
     assigned_ids = set()
     for value_lines in match_result.field_lines.values():
         for vl in value_lines:
             assigned_ids.add(id(vl))
 
+    # Field label / value regions
     for field_def in template.get("fields", []):
         key = field_def.get("key", "")
         label_region = field_def.get("label_region")
         value_region = field_def.get("value_region")
 
-        if label_region:
+        if label_region and label_region != value_region:
             x1 = label_region["x1"] * w
             y1 = label_region["y1"] * h
             x2 = label_region["x2"] * w
@@ -182,6 +208,7 @@ def visualize_template_match(image_bgr: np.ndarray,
             ax.text(x2, y2 + 2, f"V:{key}", fontsize=5, color="#f59e0b",
                     va="top", ha="right")
 
+    # Assigned (matched) value lines
     for line in lines:
         if line.bbox is None or len(line.bbox) == 0:
             continue
@@ -194,14 +221,26 @@ def visualize_template_match(image_bgr: np.ndarray,
         x2, y2 = max(xs), max(ys)
         ax.add_patch(patches.Rectangle(
             (x1, y1), x2 - x1, y2 - y1,
-            linewidth=2, edgecolor="#22c55e", facecolor="none"
+            linewidth=2, edgecolor=GREEN, facecolor="none"
         ))
+
+    # Anchor verification — stacked text in the bottom-left corner
+    for i, d in enumerate((anchor_details or [])):
+        mark = "✓" if d["found"] else "✗"
+        col  = "#16a34a" if d["found"] else "#dc2626"
+        ax.text(
+            0.01, 0.01 + i * 0.024,
+            f"{mark} {d['text'][:55]}",
+            transform=ax.transAxes, fontsize=5.5, color=col, va="bottom",
+            bbox=dict(boxstyle="round,pad=0.15", fc="white", alpha=0.85, ec="none"),
+        )
 
     legend = [
         patches.Patch(edgecolor="#9ca3af", facecolor="none", label="OCR line"),
-        patches.Patch(edgecolor="#3b82f6", facecolor="none", label="label_region"),
+        patches.Patch(edgecolor="#3b82f6", facecolor="none", linestyle="--", label="label_region"),
         patches.Patch(edgecolor="#f59e0b", facecolor="none", label="value_region"),
-        patches.Patch(edgecolor="#22c55e", facecolor="none", label="assigned"),
+        patches.Patch(edgecolor=GREEN,     facecolor="none", label="assigned"),
+        patches.Patch(edgecolor=_VIOLET,   facecolor="none", linestyle="--", label="image_region"),
     ]
     ax.legend(handles=legend, loc="upper right", fontsize=8)
     ax.set_title(
@@ -343,9 +382,9 @@ def print_report(output: PipelineOutput, agent_result: dict):
         print(f"  Surname      : {output.mrz.surname}")
         print(f"  Given names  : {output.mrz.given_names}")
         print(f"  Country      : {output.mrz.country}")
-        print(f"  Birth date   : {output.mrz.birth_date}")
+        print(f"  Birth date   : {output.mrz.date_of_birth}")
         print(f"  Expiry date  : {output.mrz.expiry_date}")
-        print(f"  Number       : {output.mrz.number}")
+        print(f"  Document number       : {output.mrz.document_number}")
         print(f"  Sex          : {output.mrz.sex}")
 
     print(f"\n── AGENT RESULT ─────────────────────────────────────────")

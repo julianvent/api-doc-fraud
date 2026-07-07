@@ -6,9 +6,14 @@ from .backends import VisionBackend
 
 _PROMPT = """Look at this identity document image.
 Identify what type of document this is.
-Return ONLY a single snake_case word from this list:
-visa, passport, national_id, pan_card, aadhaar, driver_license, unknown
-Return only the word, nothing else."""
+
+Return a short snake_case identifier in English (e.g. passport, visa,
+driver_license, permanent_resident_card, residence_permit, voter_id,
+diplomatic_passport, military_id). Use the most specific common term.
+
+If you cannot determine the document type confidently, return: unknown.
+
+Return ONLY the snake_case identifier, nothing else."""
 
 
 _cache: dict[str, str] = {}
@@ -28,12 +33,10 @@ def identify(image_path: str, backend: VisionBackend) -> str:
         return _cache[key]
 
     raw = backend.describe(image_path, _PROMPT)
-    cleaned = raw.strip().lower().split()
-    if not cleaned:
-        result = "unknown"
-    else:
-        first = re.sub(r"[^a-z_]", "", cleaned[0])
-        result = first or "unknown"
+    first_line = (raw.strip().splitlines() or [""])[0].lower()
+    normalized = re.sub(r"[^a-z_]+", "_", first_line)
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    result = normalized or "unknown"
 
     _cache[key] = result
     return result

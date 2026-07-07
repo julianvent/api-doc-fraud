@@ -1,10 +1,16 @@
 import json
 import re
 
-from .agent.agent import _build_fields_guide, _iter_template_fields
+from service.logging_config import get_logger
 from .backends import VisionBackend
 from .models import PipelineOutput
-from .normalizer import normalize_fields
+from .mrz import mrz_to_dict as _mrz_to_dict
+from .normalizer import normalize_date, normalize_fields
+from .templates import build_fields_guide, iter_template_fields
+from .validation import apply_rules
+
+
+log = get_logger(__name__)
 
 
 _VLM_EXTRACT_PROMPT = """You are extracting structured data from an identity document image.
@@ -35,6 +41,44 @@ Look at the document and identify every visible label-value pair.
 - Example: label "Date of Birth" with document text "08 March 1995"
   → key: "date_of_birth" (underscores OK in key)
   → value: "08 March 1995" (spaces preserved, NO underscores)
+
+## Multi-word names (CRITICAL — applies to surname, given_names, apellidos, nombres, etc.)
+Many naming conventions use multiple words or even multiple lines for names. You MUST capture the FULL name, not just the first word or first line.
+
+### Surname / Apellidos — TWO surnames is the NORM in many cultures
+- **Hispanic / Portuguese / Brazilian**: people have TWO surnames (paternal + maternal). It is NORMAL and EXPECTED to see two surnames under one label.
+- **Even if the label is singular ("Surname", "Apellido", "Nom")**, the VALUE on the document very often contains TWO surnames.
+- Example layout 1 — both surnames on the same line:
+  ```
+  Surname: GARCIA LOPEZ
+  ```
+  → value = "GARCIA LOPEZ" (BOTH words, not just "GARCIA")
+- Example layout 2 — both surnames on adjacent lines under the same label:
+  ```
+  Apellidos
+  GARCIA
+  LOPEZ
+  ```
+  → value = "GARCIA LOPEZ" (JOIN both lines with a single space, as a SINGLE value)
+- Example layout 3 — two-column form with both surnames stacked under one column header:
+  ```
+  Apellidos       Nombres
+  GARCIA          JUAN
+  LOPEZ           CARLOS
+  ```
+  → surname = "GARCIA LOPEZ", given_names = "JUAN CARLOS"
+
+**For surname / apellidos specifically: if you see TWO words or lines that look like surnames under the same label, ALWAYS include both as one value.** Never return just one.
+
+### Given names / Nombres — also often multiple
+- Compound given names are common: "JUAN CARLOS", "MARIA DEL CARMEN", "ANA SOFIA".
+- Multiple given names may span lines too — join them with single spaces into one value.
+
+### Universal rules for name fields
+- Capture EVERY word that belongs to the name, joined by single spaces in their original order.
+- DO NOT truncate to one word.
+- DO NOT split a multi-word name across multiple keys.
+- For names, joining multiple lines INTO one value is the CORRECT behavior (overrides the "never combine lines" rule which applies to non-name fields like document_number, dates, etc.).
 
 ## Prominent standalone data (conservative capture)
 Some documents have prominent data without an explicit label (e.g. a visa number "VJ9188237" printed at the top corner of a visa, an ID at the top of a passport). You MAY emit such data when ALL of these are true:
@@ -75,20 +119,19 @@ def _parse_response(raw: str) -> dict:
         raise
 
 
-def _mrz_to_dict(mrz) -> dict:
-    return normalize_fields({
-        "surname"        : mrz.surname,
-        "given_names"    : mrz.given_names,
-        "country"        : mrz.country,
-        "date_of_birth"  : mrz.birth_date,
-        "date_of_expiry" : mrz.expiry_date,
-        "document_number": mrz.number,
-        "sex"            : mrz.sex,
-    })
-
-
 def _norm(value) -> str:
-    return str(value).strip().upper().replace(" ", "") if value else ""
+    if not value:
+        return ""
+    return (normalize_date(str(value)) or str(value)).strip().upper().replace(" ", "")
+
+
+_CONFIDENCE_SCORE = {"high": 0.9, "medium": 0.6, "low": 0.3}
+
+
+def _confidence_to_score(confidence) -> float:
+    if not confidence:
+        return 0.0
+    return _CONFIDENCE_SCORE.get(str(confidence).strip().lower(), 0.0)
 
 
 def _compare_fields_vs_mrz(fields: dict, output: PipelineOutput) -> tuple[list[dict], list[str]]:
@@ -96,9 +139,12 @@ def _compare_fields_vs_mrz(fields: dict, output: PipelineOutput) -> tuple[list[d
     flags          : list[str]  = []
 
     mrz = output.mrz
-    print(f"[MRZ-CMP] mrz present: {mrz is not None}, mrz_unverified: {output.mrz_unverified is not None}, mrz_verified: {output.mrz_verified is not None}")
+    log.debug(
+        "mrz present=%s unverified=%s verified=%s",
+        mrz is not None, output.mrz_unverified is not None, output.mrz_verified is not None,
+    )
     if mrz is None:
-        print(f"[MRZ-CMP] no MRZ → skipping comparison")
+        log.debug("no MRZ → skipping comparison")
         return inconsistencies, flags
 
     if output.mrz_unverified:
@@ -107,47 +153,87 @@ def _compare_fields_vs_mrz(fields: dict, output: PipelineOutput) -> tuple[list[d
             "field"      : "mrz",
             "description": "MRZ checksum failed — possible tampering",
         })
-        print(f"[MRZ-CMP] MRZ checksum FAILED → added mrz_checksum_failed flag")
+        log.warning("MRZ checksum FAILED → flag mrz_checksum_failed")
 
     mrz_dict = _mrz_to_dict(mrz)
-    print(f"[MRZ-CMP] mrz_dict keys: {list(mrz_dict.keys())}")
-    print(f"[MRZ-CMP] mrz_dict values: {mrz_dict}")
-    print(f"[MRZ-CMP] fields keys: {list(fields.keys())}")
+    log.debug("mrz_dict=%s field_keys=%s", mrz_dict, list(fields.keys()))
 
     for key, mrz_value in mrz_dict.items():
         field_value = fields.get(key)
-        print(f"[MRZ-CMP] check '{key}': field={field_value!r}, mrz={mrz_value!r}")
         if not field_value or not mrz_value:
-            print(f"[MRZ-CMP]   → skipped (empty)")
+            log.debug("mrz-cmp %r skipped (empty)", key)
             continue
         norm_f = _norm(field_value)
         norm_m = _norm(mrz_value)
-        print(f"[MRZ-CMP]   → normalized: '{norm_f}' vs '{norm_m}'")
         if norm_f != norm_m:
             inconsistencies.append({
                 "field"      : key,
                 "description": f"value '{field_value}' contradicts MRZ '{mrz_value}'",
             })
-            flag = f"{key} mrz_mismatch"
-            if flag not in flags:
-                flags.append(flag)
-            print(f"[MRZ-CMP]   → MISMATCH → flag '{flag}'")
+            if "mrz_mismatch" not in flags:
+                flags.append("mrz_mismatch")
+            log.info("mrz-cmp %r MISMATCH: layout=%r mrz=%r", key, field_value, mrz_value)
         else:
-            print(f"[MRZ-CMP]   → match")
+            log.debug("mrz-cmp %r match", key)
 
-    print(f"[MRZ-CMP] final flags: {flags}")
+    log.debug("mrz comparison final flags=%s", flags)
     return inconsistencies, flags
+
+
+def _build_unverifiable_response(
+    *,
+    document_type: str,
+    source: str | None,
+    error_detail: str,
+    raw_response: str,
+) -> dict:
+    """Shape-compatible response for when the VLM step failed and we cannot
+    safely report any extracted fields. verdict='unverifiable' makes the
+    failure explicit instead of masquerading as 'genuine' with empty fields."""
+    flags = [f"vlm_unavailable: {error_detail}"]
+    return {
+        "agent_fields": {
+            "source"         : "vlm_error",
+            "document_type"  : document_type,
+            "fields"         : {},
+            "extras"         : {},
+            "inconsistencies": [{"field": "vlm", "description": error_detail}],
+            "confidence"     : "low",
+            "verdict"        : "unverifiable",
+            "notes"          : "VLM extraction failed; no fields could be extracted",
+        },
+        "document_type"  : document_type,
+        "fields"         : {},
+        "extras"         : {},
+        "match_score"    : None,
+        "flags"          : flags,
+        "verdict"        : "unverifiable",
+        "confidence"     : "low",
+        "result": {
+            "document_type"  : document_type,
+            "fields"         : {},
+            "extras"         : {},
+            "inconsistencies": [{"field": "vlm", "description": error_detail}],
+            "flags"          : flags,
+            "match_score"    : None,
+            "verdict"        : "unverifiable",
+            "confidence"     : "low",
+            "source"         : source,
+            "confidence_avg" : 0.0,
+            "raw_vlm_response": raw_response[:500] if raw_response else "",
+        },
+    }
 
 
 def extract_with_vision(image_path: str,
                         backend: VisionBackend,
                         output: PipelineOutput,
                         spatial_layout: str = "",
-                        template: dict | None = None) -> dict:
+                        template=None) -> dict:
     prompt = _VLM_EXTRACT_PROMPT
 
     if template is not None:
-        fields_guide = _build_fields_guide(template)
+        fields_guide = build_fields_guide(template)
         prompt = f"""{prompt}
 
 ## Required fields (PASS 1 — use EXACTLY these keys)
@@ -165,23 +251,42 @@ Be exhaustive: corners, headers, footers, side columns, multi-line addresses, an
 Do not invent fields with no clear label, but do NOT skip a field just because it seems minor or uncommon. The goal is a complete map of every label-value pair on the document."""
 
     if spatial_layout:
+        # Reserve ~2200 tokens for the output; rough estimate: 1 token ≈ 4 chars.
+        # num_ctx=16384 → ~14000 chars for input. Truncate layout if prompt would overflow.
+        _LAYOUT_CHAR_BUDGET = 14000 - len(prompt)
+        if len(spatial_layout) > _LAYOUT_CHAR_BUDGET:
+            spatial_layout = spatial_layout[:_LAYOUT_CHAR_BUDGET]
+            log.warning("spatial layout truncated to fit VLM context window")
         prompt = f"""{prompt}
 
 ## OCR text reference (cross-check, do not blindly copy)
 The OCR engine extracted this layout from the same image. Use the image as the primary source; treat this layout only as a hint about where text appears.
 {spatial_layout}"""
 
-    print(f"[OCR] calling VLM ({backend.__class__.__name__}) for extraction")
+    log.info("calling VLM (%s) for extraction", backend.__class__.__name__)
     raw = ""
+    vlm_error: str | None = None
     try:
         raw = backend.describe(image_path, prompt, max_tokens=2048)
-        print(f"[OCR] VLM responded ({len(raw)} chars)")
+        log.debug("VLM responded (%d chars)", len(raw))
         parsed = _parse_response(raw)
-        print(f"[OCR] parsed OK — VLM returned keys: {list((parsed.get('fields') or {}).keys())}")
+        log.info("VLM extraction parsed OK — keys=%s", list((parsed.get("fields") or {}).keys()))
     except Exception as e:
-        print(f"[OCR] VLM parse FAILED: {type(e).__name__}: {e}")
-        print(f"[OCR] raw response was:\n{raw}")
+        vlm_error = f"{type(e).__name__}: {e}"
+        log.error("VLM call/parse FAILED: %s", vlm_error)
+        log.debug("VLM raw response:\n%s", raw)
         parsed = {"error": "vision response could not be parsed", "raw": raw}
+
+    # If the VLM step failed, do NOT proceed with empty fields as if extraction
+    # succeeded — that previously produced verdict="genuine" with match_score=0.
+    # Surface the failure with verdict="unverifiable" and a clear flag.
+    if vlm_error is not None or "error" in parsed:
+        return _build_unverifiable_response(
+            document_type = output.document_type or "unknown",
+            source        = output.source,
+            error_detail  = vlm_error or str(parsed.get("error")),
+            raw_response  = raw,
+        )
 
     doc_type   = parsed.get("document_type") or output.document_type or "unknown"
     raw_fields = parsed.get("fields", {}) or {}
@@ -195,7 +300,7 @@ The OCR engine extracted this layout from the same image. Use the image as the p
     extras: dict = {}
 
     if template is not None:
-        template_keys = [f.get("key") for f in _iter_template_fields(template) if f.get("key")]
+        template_keys = [f.key for f in iter_template_fields(template) if f.key]
         extras        = {k: v for k, v in agent_fields.items() if k not in template_keys and v}
         agent_fields  = {k: v for k, v in agent_fields.items() if k in template_keys}
         missing       = [k for k in template_keys if not agent_fields.get(k)]
@@ -204,20 +309,28 @@ The OCR engine extracted this layout from the same image. Use the image as the p
             agent_fields.pop(k, None)
         found_count = len(template_keys) - len(missing)
         match_score = round(found_count / len(template_keys), 3) if template_keys else None
-        print(f"[OCR] template match_score: {found_count}/{len(template_keys)} = {match_score}")
+        log.info("template match_score: %d/%d = %s", found_count, len(template_keys), match_score)
         if missing:
-            print(f"[OCR] missing template fields → flags: {missing}")
+            log.warning("missing template fields → flags: %s", missing)
         if extras:
-            print(f"[OCR] extras (non-template fields): {list(extras.keys())}")
+            log.info("extras (non-template fields): %s", list(extras.keys()))
 
     inconsistencies, mrz_flags = _compare_fields_vs_mrz(agent_fields, output)
     flags.extend(mrz_flags)
     if mrz_flags:
-        print(f"[OCR] MRZ flags: {mrz_flags}")
+        log.info("MRZ flags: %s", mrz_flags)
+
+    if template is not None:
+        rule_issues = apply_rules(agent_fields, template.field_rules)
+        if rule_issues:
+            inconsistencies.extend(rule_issues)
+            log.warning("%d field_rule violations", len(rule_issues))
+
     if inconsistencies:
-        print(f"[OCR] inconsistencies: {len(inconsistencies)}")
+        log.info("inconsistencies: %d", len(inconsistencies))
 
     verdict = "suspicious" if inconsistencies else "genuine"
+    confidence_score = _confidence_to_score(parsed.get("confidence"))
 
     return {
         "agent_fields": {
@@ -249,6 +362,6 @@ The OCR engine extracted this layout from the same image. Use the image as the p
             "verdict"        : verdict,
             "confidence"     : parsed.get("confidence"),
             "source"         : output.source,
-            "confidence_avg" : output.confidence_avg
+            "confidence_avg" : confidence_score
         }
     }

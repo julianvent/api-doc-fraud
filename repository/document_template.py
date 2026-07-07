@@ -1,14 +1,19 @@
+from datetime import date
+
 from db.session import Session
 from model.document_template import DocumentTemplate
 
 
 def create_template(
-    document_name: str, document_type: str, fields: list[dict], img_path: str, country: str | None = None #anchors: list[dict], img_path: str
+    document_name: str, document_type: str, fields: list[dict], img_path: str,
+    country: str,  edition: date, state: str | None = None #anchors: list[dict], img_path: str
 ) -> DocumentTemplate:
     template = DocumentTemplate(
         document_name=document_name,
         document_type=document_type,
         country=country,
+        state=state,
+        edition=edition,
         img_path=img_path,
         fields=fields,
         #anchors=anchors,
