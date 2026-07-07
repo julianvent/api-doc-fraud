@@ -1,6 +1,6 @@
 # Document Fraud Detection API
 
-A multi-stage identity document fraud detection and face liveness verification system built with FastAPI.
+A multi-stage identity document fraud detection system built with FastAPI.
 
 ---
 
@@ -20,10 +20,7 @@ A multi-stage identity document fraud detection and face liveness verification s
 
 ## Overview
 
-This API provides two core capabilities for identity verification workflows:
-
-1. **Document Fraud Detection** — Analyzes uploaded identity documents (images or PDFs) through a multi-stage forensic pipeline and returns a risk verdict (`ACCEPT`, `REVIEW`, or `REJECT`) along with a risk score and detailed module flags.
-2. **Face Liveness Detection** — Real-time anti-spoofing verification via WebSocket, issuing active challenges (blink, turn head, smile) and applying passive ML models to confirm the subject is a live person.
+This API analyzes uploaded identity documents (images or PDFs) through a multi-stage forensic pipeline and returns a risk verdict (`ACCEPT`, `REVIEW`, or `REJECT`) along with a risk score and detailed module flags.
 
 ---
 
@@ -37,13 +34,11 @@ The system is designed to assist identity verification teams in detecting fraudu
 - MRZ (Machine Readable Zone) parsing and cross-field validation
 - Pixel-level manipulation detection (splicing, cloning, compression artifacts)
 - File metadata forensics (AI-generation traces, software signatures)
-- Real-time face liveness with active challenge support
 - Document template management (create, confirm, list)
 
 **Out of scope:**
 - End-user authentication or session management
 - Direct integration with government databases
-- Biometric 1:N search (the liveness module is 1:1 challenge-response only)
 
 ---
 
@@ -52,7 +47,7 @@ The system is designed to assist identity verification teams in detecting fraudu
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                        API Layer  (FastAPI)                      │
-│   POST /v1/verify    ·   /v1/templates/*    ·   WS /v1/liveness  │
+│             POST /v1/verify    ·   /v1/templates/*               │
 └───────────────────────────────┬──────────────────────────────────┘
                                 │
                     ┌───────────▼───────────┐
@@ -73,11 +68,6 @@ The system is designed to assist identity verification teams in detecting fraudu
           │  │(normalize) │   │  PaddleOCR + MRZ +   │ │
           │  └────────────┘   │  Template Matching   │ │
           │                   └─────────────────────┘ │
-          │                                           │
-          │  ┌────────────────────────────────────┐   │
-          │  │         Liveness Service            │   │
-          │  │  MiniFAS + Moire + Active Challenges│   │
-          │  └────────────────────────────────────┘   │
           └──────────────────┬────────────────────────┘
                              │
           ┌──────────────────▼────────────────────────┐
@@ -118,7 +108,6 @@ Upload → [1] Metadata forensics
 | Vision LLM | Ollama (`qwen2.5vl:7b`) |
 | Embeddings | Ollama (`bge-m3`) |
 | ML / Deep learning | PyTorch 2.11 · ONNX Runtime 1.27 · timm |
-| Face liveness | MediaPipe · MiniFAS · EfficientNet |
 | Tampering detection | TruFor · DocTamper |
 | Vector database | Qdrant (local on-disk + remote HTTP) |
 | Relational database | PostgreSQL · SQLAlchemy 2 · Alembic |
@@ -241,14 +230,9 @@ uvicorn main:app --reload
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-**Liveness-only standalone server:**
-```bash
-python -m uvicorn serve_liveness:app --host 127.0.0.1 --port 8000
-```
-
 The API will be available at `http://localhost:8000`.
 
-> On first startup the server warms up all ML models (tampering detectors, OCR engine, liveness passive models). This may take 30–60 seconds depending on hardware.
+> On first startup the server warms up all ML models (tampering detectors, OCR engine). This may take 30–60 seconds depending on hardware.
 
 ---
 
@@ -303,14 +287,6 @@ curl -X POST http://localhost:8000/v1/templates/generate \
 curl http://localhost:8000/v1/templates
 ```
 
-### Face liveness (WebSocket)
-
-Connect to `ws://localhost:8000/v1/liveness/session` using the built-in browser client:
-
-```
-http://localhost:8000/static/liveness_client.html
-```
-
 ---
 
 ## Using the Swagger UI
@@ -343,8 +319,6 @@ FastAPI auto-generates interactive API documentation. Once the server is running
 | `CORS_ALLOW_ORIGINS` | `http://localhost:3000` | Comma-separated list of allowed CORS origins |
 | `LOG_LEVEL` | `INFO` | App log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `LOG_FORMAT` | `text` | Log format: `text` or `json` |
-| `LIVENESS_LOG_LEVEL` | `INFO` | Log level for the liveness module |
-| `LIVENESS_LOG_FORMAT` | `text` | Log format for the liveness module |
 | `MAX_UPLOAD_BYTES` | `10485760` | Max upload size in bytes (default: 10 MB) |
 | `OCR_ENGINE` | `paddle` | OCR backend: `paddle`, `dots`, or `dolphin` |
 | `DOTS_MODEL_PATH` | `service/ocr/DotsOCR` | Path to DotsOCR model weights |
@@ -373,7 +347,6 @@ FastAPI auto-generates interactive API documentation. Once the server is running
 
 | Topic | Location |
 |---|---|
-| Liveness service architecture | [`service/liveness/README.md`](service/liveness/README.md) |
 | Preprocessor configuration knobs | [`service/preprocessor/config/defaults.toml`](service/preprocessor/config/defaults.toml) |
 | Document template JSON format | [`service/ocr/templates/`](service/ocr/templates/) |
 | Database schema & migrations | [`alembic/versions/`](alembic/versions/) |
