@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.v1.fraud_detection_router import router as fraud_router
 from api.v1.liveness_router import router as liveness_router
+from api.v1.risk_router import router as risk_router
 from service.logging_config import configure_logging, get_logger
 
 
@@ -50,6 +51,7 @@ app.add_middleware(
 
 app.include_router(fraud_router)
 app.include_router(liveness_router)
+app.include_router(risk_router)
 
 
 @app.get("/health")

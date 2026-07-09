@@ -11,6 +11,7 @@ from pydantic import BaseModel
 class Verdict(str, Enum):
     ACCEPT = "ACCEPT"
     REVIEW = "REVIEW"
+    EDD    = "EDD"
     REJECT = "REJECT"
 
 

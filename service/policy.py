@@ -40,6 +40,7 @@ from typing import List
 from service.metadata.analyzer import MetadataReport
 from service.preprocessor.app.models import ProcessedPage
 from service.tampering.detector import PageReport, RiskLabel
+import service.risk_thresholds_store as _thresholds_store
 
 
 # ── weights ────────────────────────────────────────────────────────────────────
@@ -47,11 +48,7 @@ _W_OCR       = 0.40
 _W_TAMPERING = 0.35
 _W_METADATA  = 0.25
 
-# ── aggregate score thresholds ─────────────────────────────────────────────────
-_REJECT_THRESHOLD = 0.70
-_REVIEW_THRESHOLD = 0.35
-
-# ── per-service thresholds ─────────────────────────────────────────────────────
+# ── per-service thresholds (intentionally not runtime-configurable) ────────────
 _METADATA_REJECT_THRESHOLD = 0.85   # near-certain AI / forgery origin
 _METADATA_REVIEW_THRESHOLD = 0.60   # moderately suspicious metadata
 
@@ -271,9 +268,10 @@ def _decide(
         )
         return "REJECT", reasons
 
-    # Combined risk score too high.
-    if score >= _REJECT_THRESHOLD:
-        reasons.append(f"aggregate risk score {score:.2f} >= {_REJECT_THRESHOLD}")
+    # Score-based 4-tier verdict — uses the runtime-configurable thresholds.
+    t = _thresholds_store.get()
+    if score > t.edd_max:
+        reasons.append(f"aggregate risk score {score:.3f} > edd_max ({t.edd_max})")
         return "REJECT", reasons
 
     # ── REVIEW — soft rules ───────────────────────────────────────────────────
@@ -311,9 +309,12 @@ def _decide(
         )
         return "REVIEW", reasons
 
-    # Combined risk score elevated but below reject threshold.
-    if score >= _REVIEW_THRESHOLD:
-        reasons.append(f"aggregate risk score {score:.2f} >= {_REVIEW_THRESHOLD}")
+    if score > t.review_max:
+        reasons.append(f"aggregate risk score {score:.3f} > review_max ({t.review_max}) — EDD required")
+        return "EDD", reasons
+
+    if score > t.approve_max:
+        reasons.append(f"aggregate risk score {score:.3f} > approve_max ({t.approve_max})")
         return "REVIEW", reasons
 
     return "ACCEPT", ["all signals within acceptable thresholds"]
